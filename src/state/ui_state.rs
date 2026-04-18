@@ -43,6 +43,10 @@ impl UIState {
         self.selected_response = Some(selected_response);
     }
 
+    pub fn clear_selected_response(&mut self) {
+        self.selected_response = None;
+    }
+
     pub fn set_view(&mut self, view: View) {
         self.view = view;
     }

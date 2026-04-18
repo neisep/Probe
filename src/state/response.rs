@@ -1,5 +1,8 @@
 #[derive(Debug, Clone, Default)]
 pub struct ResponseSummary {
+    pub request_id: Option<String>,
+    pub request_method: Option<String>,
+    pub request_url: Option<String>,
     pub status: Option<u16>,
     pub timing_ms: Option<u128>,
     pub size_bytes: Option<usize>,
