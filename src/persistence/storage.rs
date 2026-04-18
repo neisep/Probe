@@ -1,5 +1,5 @@
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
@@ -56,6 +56,104 @@ fn is_valid_key(key: &str) -> bool {
 /// Data is stored under <base_dir>/<category>/<key>.json
 pub struct FileStorage {
     base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredDraftPreview {
+    id: String,
+    draft_id: String,
+    #[serde(default)]
+    method: Option<String>,
+    #[serde(default)]
+    target_url: Option<String>,
+    #[serde(default)]
+    preview_title: Option<String>,
+    #[serde(default)]
+    preview_snippet: Option<String>,
+    #[serde(default)]
+    workspace_id: Option<String>,
+    #[serde(default)]
+    tags: Vec<String>,
+    created_at: Option<String>,
+}
+
+impl From<&DraftPreview> for StoredDraftPreview {
+    fn from(preview: &DraftPreview) -> Self {
+        Self {
+            id: preview.id.clone(),
+            draft_id: preview.draft_id.clone(),
+            method: preview.method.clone(),
+            target_url: preview.target_url.clone(),
+            preview_title: preview.preview_title.clone(),
+            preview_snippet: preview.preview_snippet.clone(),
+            workspace_id: None,
+            tags: preview.tags.clone(),
+            created_at: preview.created_at.clone(),
+        }
+    }
+}
+
+impl From<StoredDraftPreview> for DraftPreview {
+    fn from(preview: StoredDraftPreview) -> Self {
+        Self {
+            id: preview.id,
+            draft_id: preview.draft_id,
+            method: preview.method,
+            target_url: preview.target_url,
+            preview_title: preview.preview_title,
+            preview_snippet: preview.preview_snippet,
+            tags: preview.tags,
+            created_at: preview.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredSessionState {
+    #[serde(default)]
+    selected_response: Option<String>,
+    #[serde(default)]
+    selected_request: Option<String>,
+    #[serde(default)]
+    active_view: Option<String>,
+    #[serde(default)]
+    open_panels: Vec<String>,
+    updated_at: Option<String>,
+}
+
+impl StoredSessionState {
+    fn empty() -> Self {
+        Self {
+            selected_response: None,
+            selected_request: None,
+            active_view: None,
+            open_panels: Vec::new(),
+            updated_at: None,
+        }
+    }
+}
+
+impl From<&SessionState> for StoredSessionState {
+    fn from(state: &SessionState) -> Self {
+        Self {
+            selected_response: state.selected_response.clone(),
+            selected_request: None,
+            active_view: state.active_view.clone(),
+            open_panels: state.open_panels.clone(),
+            updated_at: state.updated_at.clone(),
+        }
+    }
+}
+
+impl From<StoredSessionState> for SessionState {
+    fn from(state: StoredSessionState) -> Self {
+        Self {
+            selected_response: state.selected_response,
+            active_view: state.active_view,
+            open_panels: state.open_panels,
+            updated_at: state.updated_at,
+        }
+    }
 }
 
 impl FileStorage {
@@ -158,6 +256,36 @@ impl FileStorage {
         Ok(keys)
     }
 
+    fn load_stored_draft_preview(&self, id: &str) -> Result<StoredDraftPreview, PersistenceError> {
+        self.read_json("draft_previews", id)
+    }
+
+    fn load_all_drafts(&self) -> Result<Vec<Draft>, PersistenceError> {
+        let draft_ids = self.list_drafts()?;
+        let mut drafts = Vec::with_capacity(draft_ids.len());
+
+        for draft_id in draft_ids {
+            drafts.push(self.load_draft(&draft_id)?);
+        }
+
+        Ok(drafts)
+    }
+
+    fn load_all_stored_draft_previews(&self) -> Result<Vec<StoredDraftPreview>, PersistenceError> {
+        let preview_ids = self.list_draft_previews()?;
+        let mut previews = Vec::with_capacity(preview_ids.len());
+
+        for preview_id in preview_ids {
+            previews.push(self.load_stored_draft_preview(&preview_id)?);
+        }
+
+        Ok(previews)
+    }
+
+    fn load_stored_session_state(&self) -> Result<StoredSessionState, PersistenceError> {
+        self.read_json("session", "state")
+    }
+
     /* Draft APIs */
     pub fn save_draft(&self, draft: &Draft) -> Result<(), PersistenceError> {
         self.write_json("drafts", &draft.id, draft)
@@ -174,16 +302,79 @@ impl FileStorage {
 
     /* Draft preview APIs */
     pub fn save_draft_preview(&self, preview: &DraftPreview) -> Result<(), PersistenceError> {
-        self.write_json("draft_previews", &preview.id, preview)
+        let mut stored_preview = StoredDraftPreview::from(preview);
+        stored_preview.workspace_id = match self.load_draft(&stored_preview.draft_id) {
+            Ok(draft) => draft.workspace_id,
+            Err(PersistenceError::NotFound(_)) => {
+                match self.load_stored_draft_preview(&stored_preview.id) {
+                    Ok(existing_preview) => existing_preview.workspace_id,
+                    Err(PersistenceError::NotFound(_)) => None,
+                    Err(error) => return Err(error),
+                }
+            }
+            Err(error) => return Err(error),
+        };
+
+        self.write_json("draft_previews", &preview.id, &stored_preview)
     }
     pub fn load_draft_preview(&self, id: &str) -> Result<DraftPreview, PersistenceError> {
-        self.read_json("draft_previews", id)
+        Ok(self.load_stored_draft_preview(id)?.into())
     }
     pub fn delete_draft_preview(&self, id: &str) -> Result<(), PersistenceError> {
         self.delete_json("draft_previews", id)
     }
     pub fn list_draft_previews(&self) -> Result<Vec<String>, PersistenceError> {
         self.list_keys_in_category("draft_previews")
+    }
+    pub fn load_drafts_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<Draft>, PersistenceError> {
+        let drafts = self.load_all_drafts()?;
+        Ok(drafts
+            .into_iter()
+            .filter(|draft| draft.workspace_id.as_deref() == Some(workspace_id))
+            .collect())
+    }
+    pub fn load_draft_previews_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<DraftPreview>, PersistenceError> {
+        let previews = self.load_all_stored_draft_previews()?;
+        let mut matching_previews = Vec::new();
+
+        for preview in previews {
+            let matches_workspace = match preview.workspace_id.as_deref() {
+                Some(preview_workspace_id) => preview_workspace_id == workspace_id,
+                None => {
+                    self.load_draft(&preview.draft_id)?.workspace_id.as_deref()
+                        == Some(workspace_id)
+                }
+            };
+
+            if matches_workspace {
+                matching_previews.push(preview.into());
+            }
+        }
+
+        Ok(matching_previews)
+    }
+    pub fn delete_drafts_for_workspace(&self, workspace_id: &str) -> Result<(), PersistenceError> {
+        for draft in self.load_drafts_for_workspace(workspace_id)? {
+            self.delete_draft(&draft.id)?;
+        }
+
+        Ok(())
+    }
+    pub fn delete_draft_previews_for_workspace(
+        &self,
+        workspace_id: &str,
+    ) -> Result<(), PersistenceError> {
+        for preview in self.load_draft_previews_for_workspace(workspace_id)? {
+            self.delete_draft_preview(&preview.id)?;
+        }
+
+        Ok(())
     }
 
     /* Snapshot APIs */
@@ -256,10 +447,33 @@ impl FileStorage {
 
     /* Session-level UI state (richer) */
     pub fn save_session_state(&self, state: &SessionState) -> Result<(), PersistenceError> {
-        self.write_json("session", "state", state)
+        let mut stored_state = StoredSessionState::from(state);
+        stored_state.selected_request = match self.load_stored_session_state() {
+            Ok(existing_state) => existing_state.selected_request,
+            Err(PersistenceError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        self.write_json("session", "state", &stored_state)
     }
     pub fn load_session_state(&self) -> Result<SessionState, PersistenceError> {
-        self.read_json("session", "state")
+        Ok(self.load_stored_session_state()?.into())
+    }
+    pub fn save_selected_request(
+        &self,
+        selected_request: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut stored_state = match self.load_stored_session_state() {
+            Ok(existing_state) => existing_state,
+            Err(PersistenceError::NotFound(_)) => StoredSessionState::empty(),
+            Err(error) => return Err(error),
+        };
+        stored_state.selected_request = selected_request.map(|request_id| request_id.to_owned());
+
+        self.write_json("session", "state", &stored_state)
+    }
+    pub fn load_selected_request(&self) -> Result<Option<String>, PersistenceError> {
+        Ok(self.load_stored_session_state()?.selected_request)
     }
 }
 
@@ -277,3 +491,194 @@ impl std::fmt::Display for PersistenceError {
 }
 
 impl std::error::Error for PersistenceError {}
+
+#[cfg(test)]
+mod tests {
+    use super::FileStorage;
+    use crate::persistence::models::{Draft, DraftPreview, SessionState};
+    use std::fs;
+    use std::path::PathBuf;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_storage_path(test_name: &str) -> PathBuf {
+        let nanos = match SystemTime::now().duration_since(UNIX_EPOCH) {
+            Ok(duration) => duration.as_nanos(),
+            Err(_) => 0,
+        };
+
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("storage-tests")
+            .join(format!("{test_name}-{nanos}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn workspace_helpers_filter_and_delete_workspace_records() {
+        let storage_path = unique_storage_path("workspace-helpers");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let drafts = vec![
+            Draft {
+                id: "draft-one".to_owned(),
+                workspace_id: Some("workspace-a".to_owned()),
+                path: Some("requests/one".to_owned()),
+                content: "GET https://example.com/a".to_owned(),
+                created_at: None,
+                tags: vec!["workspace-a".to_owned()],
+            },
+            Draft {
+                id: "draft-two".to_owned(),
+                workspace_id: Some("workspace-b".to_owned()),
+                path: Some("requests/two".to_owned()),
+                content: "GET https://example.com/b".to_owned(),
+                created_at: None,
+                tags: vec!["workspace-b".to_owned()],
+            },
+        ];
+
+        for draft in &drafts {
+            if let Err(error) = storage.save_draft(draft) {
+                panic!("failed to save draft {}: {error}", draft.id);
+            }
+        }
+
+        let previews = vec![
+            DraftPreview {
+                id: "preview-one".to_owned(),
+                draft_id: "draft-one".to_owned(),
+                method: Some("GET".to_owned()),
+                target_url: Some("https://example.com/a".to_owned()),
+                preview_title: Some("workspace a".to_owned()),
+                preview_snippet: Some("body a".to_owned()),
+                tags: vec!["workspace-a".to_owned()],
+                created_at: None,
+            },
+            DraftPreview {
+                id: "preview-two".to_owned(),
+                draft_id: "draft-two".to_owned(),
+                method: Some("GET".to_owned()),
+                target_url: Some("https://example.com/b".to_owned()),
+                preview_title: Some("workspace b".to_owned()),
+                preview_snippet: Some("body b".to_owned()),
+                tags: vec!["workspace-b".to_owned()],
+                created_at: None,
+            },
+        ];
+
+        for preview in &previews {
+            if let Err(error) = storage.save_draft_preview(preview) {
+                panic!("failed to save draft preview {}: {error}", preview.id);
+            }
+        }
+
+        let workspace_a_drafts = match storage.load_drafts_for_workspace("workspace-a") {
+            Ok(drafts) => drafts,
+            Err(error) => panic!("failed to load workspace drafts: {error}"),
+        };
+        assert_eq!(workspace_a_drafts.len(), 1);
+        assert_eq!(workspace_a_drafts[0].id, "draft-one");
+
+        let workspace_a_previews = match storage.load_draft_previews_for_workspace("workspace-a") {
+            Ok(previews) => previews,
+            Err(error) => panic!("failed to load workspace previews: {error}"),
+        };
+        assert_eq!(workspace_a_previews.len(), 1);
+        assert_eq!(workspace_a_previews[0].id, "preview-one");
+
+        if let Err(error) = storage.delete_draft_previews_for_workspace("workspace-a") {
+            panic!("failed to delete workspace previews: {error}");
+        }
+        if let Err(error) = storage.delete_drafts_for_workspace("workspace-a") {
+            panic!("failed to delete workspace drafts: {error}");
+        }
+
+        let remaining_drafts = match storage.list_drafts() {
+            Ok(drafts) => drafts,
+            Err(error) => panic!("failed to list remaining drafts: {error}"),
+        };
+        assert_eq!(remaining_drafts, vec!["draft-two".to_owned()]);
+
+        let remaining_previews = match storage.list_draft_previews() {
+            Ok(previews) => previews,
+            Err(error) => panic!("failed to list remaining previews: {error}"),
+        };
+        assert_eq!(remaining_previews, vec!["preview-two".to_owned()]);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn selected_request_helpers_preserve_session_state() {
+        let storage_path = unique_storage_path("selected-request");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let session_state = SessionState {
+            selected_response: Some("response-1".to_owned()),
+            active_view: Some("Workspace".to_owned()),
+            open_panels: vec!["sidebar".to_owned(), "status".to_owned()],
+            updated_at: Some("2026-01-01T00:00:00Z".to_owned()),
+        };
+
+        if let Err(error) = storage.save_session_state(&session_state) {
+            panic!("failed to save session state: {error}");
+        }
+        if let Err(error) = storage.save_selected_request(Some("request-7")) {
+            panic!("failed to save selected request: {error}");
+        }
+
+        let loaded_request = match storage.load_selected_request() {
+            Ok(request) => request,
+            Err(error) => panic!("failed to load selected request: {error}"),
+        };
+        assert_eq!(loaded_request.as_deref(), Some("request-7"));
+
+        let loaded_state = match storage.load_session_state() {
+            Ok(state) => state,
+            Err(error) => panic!("failed to load session state: {error}"),
+        };
+        assert_eq!(
+            loaded_state.selected_response.as_deref(),
+            Some("response-1")
+        );
+        assert_eq!(loaded_state.active_view.as_deref(), Some("Workspace"));
+
+        let updated_session_state = SessionState {
+            selected_response: Some("response-2".to_owned()),
+            active_view: Some("History".to_owned()),
+            open_panels: vec!["sidebar".to_owned()],
+            updated_at: Some("2026-01-02T00:00:00Z".to_owned()),
+        };
+
+        if let Err(error) = storage.save_session_state(&updated_session_state) {
+            panic!("failed to update session state: {error}");
+        }
+
+        let preserved_request = match storage.load_selected_request() {
+            Ok(request) => request,
+            Err(error) => panic!("failed to reload selected request: {error}"),
+        };
+        assert_eq!(preserved_request.as_deref(), Some("request-7"));
+
+        if let Err(error) = storage.save_selected_request(None) {
+            panic!("failed to clear selected request: {error}");
+        }
+
+        let cleared_request = match storage.load_selected_request() {
+            Ok(request) => request,
+            Err(error) => panic!("failed to load cleared selected request: {error}"),
+        };
+        assert_eq!(cleared_request, None);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+}

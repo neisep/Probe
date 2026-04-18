@@ -12,7 +12,6 @@ use serde_json::json;
 
 const LEGACY_SNAPSHOT_ID: &str = "last";
 const WORKSPACE_SNAPSHOT_ID: &str = "current";
-const SELECTED_DRAFT_ID: &str = "selected_request";
 const DEFAULT_WORKSPACE_ID: &str = "default";
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -24,12 +23,20 @@ struct PersistedRequestDraft {
     body: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+struct PendingRequestContext {
+    request_id: String,
+    method: String,
+    url: String,
+}
+
 pub struct ProbeApp {
     status: String,
     state: AppState,
     runtime: Option<Runtime>,
     storage: Option<FileStorage>,
     pending_request: Option<u64>,
+    pending_request_context: Option<PendingRequestContext>,
 }
 
 impl ProbeApp {
@@ -49,6 +56,7 @@ impl ProbeApp {
                     runtime: Some(runtime),
                     storage,
                     pending_request: None,
+                    pending_request_context: None,
                 }
             }
             (Err(error), Ok(state)) => Self {
@@ -57,6 +65,7 @@ impl ProbeApp {
                 runtime: None,
                 storage,
                 pending_request: None,
+                pending_request_context: None,
             },
             (Ok(runtime), Err(error)) => Self {
                 status: format!("State bootstrap fallback: {error}"),
@@ -64,6 +73,7 @@ impl ProbeApp {
                 runtime: Some(runtime),
                 storage,
                 pending_request: None,
+                pending_request_context: None,
             },
             (Err(runtime_error), Err(state_error)) => Self {
                 status: format!("Startup fallback: runtime={runtime_error}; state={state_error}"),
@@ -71,6 +81,7 @@ impl ProbeApp {
                 runtime: None,
                 storage,
                 pending_request: None,
+                pending_request_context: None,
             },
         }
     }
@@ -80,14 +91,21 @@ impl ProbeApp {
             return;
         };
 
-        let Some(request) = self.state.selected_request() else {
+        let Some(selected_request_index) = self.state.selected_request_index() else {
             return;
+        };
+        let Some(request) = self.state.selected_request().cloned() else {
+            return;
+        };
+        let selected_request_id = match self.state.selected_request_id() {
+            Some(selected_request_id) => selected_request_id,
+            None => AppState::request_id_for_index(selected_request_index),
         };
 
         let snapshot = Snapshot {
             id: LEGACY_SNAPSHOT_ID.to_owned(),
             data: json!({
-                "selected_request": self.state.ui.selected_request,
+                "selected_request": Some(selected_request_index),
                 "method": request.method,
                 "url": request.url,
                 "headers": request.headers,
@@ -100,47 +118,63 @@ impl ProbeApp {
             return;
         }
 
-        let draft_content = match serde_json::to_string(&PersistedRequestDraft {
-            method: request.method.clone(),
-            url: request.url.clone(),
-            headers: request.headers.clone(),
-            body: request.body.clone(),
-        }) {
-            Ok(draft_content) => draft_content,
-            Err(error) => {
-                self.status = format!("Save failed: {error}");
-                return;
-            }
-        };
-
-        let selected_draft = crate::persistence::models::Draft {
-            id: SELECTED_DRAFT_ID.to_owned(),
-            workspace_id: Some(DEFAULT_WORKSPACE_ID.to_owned()),
-            path: Some("selected-request".to_owned()),
-            content: draft_content,
-            created_at: None,
-            tags: vec!["selected".to_owned(), "mvp".to_owned()],
-        };
-
-        if let Err(error) = storage.save_draft(&selected_draft) {
+        if let Err(error) = storage.delete_draft_previews_for_workspace(DEFAULT_WORKSPACE_ID) {
             self.status = format!("Save failed: {error}");
             return;
         }
 
-        let draft_preview = crate::persistence::models::DraftPreview {
-            id: SELECTED_DRAFT_ID.to_owned(),
-            draft_id: SELECTED_DRAFT_ID.to_owned(),
-            method: Some(request.method.clone()),
-            target_url: Some(request.url.clone()),
-            preview_title: Some(format!("{} {}", request.method, request.url)),
-            preview_snippet: request.body.clone(),
-            tags: vec!["selected".to_owned()],
-            created_at: None,
-        };
-
-        if let Err(error) = storage.save_draft_preview(&draft_preview) {
+        if let Err(error) = storage.delete_drafts_for_workspace(DEFAULT_WORKSPACE_ID) {
             self.status = format!("Save failed: {error}");
             return;
+        }
+
+        let mut draft_ids = Vec::with_capacity(self.state.requests.len());
+        for (index, request) in self.state.requests.iter().enumerate() {
+            let draft_id = AppState::request_id_for_index(index);
+            let draft_content = match serde_json::to_string(&PersistedRequestDraft {
+                method: request.method.clone(),
+                url: request.url.clone(),
+                headers: request.headers.clone(),
+                body: request.body.clone(),
+            }) {
+                Ok(draft_content) => draft_content,
+                Err(error) => {
+                    self.status = format!("Save failed: {error}");
+                    return;
+                }
+            };
+
+            let draft = crate::persistence::models::Draft {
+                id: draft_id.clone(),
+                workspace_id: Some(DEFAULT_WORKSPACE_ID.to_owned()),
+                path: Some(format!("request-{index}")),
+                content: draft_content,
+                created_at: None,
+                tags: vec!["request".to_owned(), "mvp".to_owned()],
+            };
+
+            if let Err(error) = storage.save_draft(&draft) {
+                self.status = format!("Save failed: {error}");
+                return;
+            }
+
+            let draft_preview = crate::persistence::models::DraftPreview {
+                id: draft_id.clone(),
+                draft_id: draft_id.clone(),
+                method: Some(request.method.clone()),
+                target_url: Some(request.url.clone()),
+                preview_title: Some(request.display_name()),
+                preview_snippet: request.body.clone(),
+                tags: vec!["request".to_owned()],
+                created_at: None,
+            };
+
+            if let Err(error) = storage.save_draft_preview(&draft_preview) {
+                self.status = format!("Save failed: {error}");
+                return;
+            }
+
+            draft_ids.push(draft_id);
         }
 
         let mut response_ids = Vec::new();
@@ -149,7 +183,7 @@ impl ProbeApp {
             let stored_response = crate::persistence::models::ResponseSummary {
                 id: response_id.clone(),
                 workspace_id: Some(DEFAULT_WORKSPACE_ID.to_owned()),
-                request_id: Some(SELECTED_DRAFT_ID.to_owned()),
+                request_id: response.request_id.clone(),
                 status_code: response.status,
                 summary: response.error.clone(),
                 duration_ms: response.timing_ms.map(|timing_ms| timing_ms as u64),
@@ -168,6 +202,8 @@ impl ProbeApp {
                     .error
                     .clone()
                     .or_else(|| response.status.map(|status| format!("HTTP {status}"))),
+                request_method: response.request_method.clone(),
+                request_url: response.request_url.clone(),
                 content_preview: response.preview_text.clone(),
                 content_type: response.content_type.clone(),
                 header_count: response.header_count,
@@ -192,7 +228,7 @@ impl ProbeApp {
             workspace_root: None,
             created_at: None,
             open_files: vec![self.state.ui.view.label().to_owned()],
-            drafts: vec![SELECTED_DRAFT_ID.to_owned()],
+            drafts: draft_ids,
             responses: response_ids,
             meta: json!({
                 "selected_request": self.state.ui.selected_request,
@@ -225,6 +261,11 @@ impl ProbeApp {
 
         if let Err(error) = storage.save_session_state(&session_state) {
             self.status = format!("Save failed: {error}");
+            return;
+        }
+
+        if let Err(error) = storage.save_selected_request(Some(&selected_request_id)) {
+            self.status = format!("Save failed: {error}");
         }
     }
 }
@@ -247,10 +288,15 @@ impl eframe::App for ProbeApp {
                     }
                     Event::Completed { id, result } => {
                         self.pending_request = None;
+                        let pending_context = self.pending_request_context.take();
 
                         match result {
                             AsyncRequestResult::Ok(info) => {
                                 let mut summary = crate::state::ResponseSummary::default();
+                                apply_pending_request_context(
+                                    &mut summary,
+                                    pending_context.as_ref(),
+                                );
                                 summary.status = Some(info.status);
                                 summary.timing_ms = Some(info.duration_ms);
                                 summary.size_bytes = Some(info.body.len());
@@ -271,6 +317,10 @@ impl eframe::App for ProbeApp {
                             }
                             AsyncRequestResult::Err(err) => {
                                 let mut summary = crate::state::ResponseSummary::default();
+                                apply_pending_request_context(
+                                    &mut summary,
+                                    pending_context.as_ref(),
+                                );
                                 summary.error = Some(format_error(&err));
                                 summary.preview_text = err.details.clone();
                                 self.status = format!("Request {id} failed");
@@ -306,6 +356,16 @@ impl eframe::App for ProbeApp {
                             self.status = "Runtime unavailable".to_owned();
                             return;
                         };
+                        let Some(selected_request_index) = self.state.selected_request_index()
+                        else {
+                            self.status = "No request selected".to_owned();
+                            return;
+                        };
+                        let pending_request_context = PendingRequestContext {
+                            request_id: AppState::request_id_for_index(selected_request_index),
+                            method: req.method.clone(),
+                            url: req.url.clone(),
+                        };
 
                         let ar = AsyncRequest {
                             url: req.url.clone(),
@@ -315,6 +375,7 @@ impl eframe::App for ProbeApp {
                         match runtime.submit_blocking(ar) {
                             Ok(id) => {
                                 self.pending_request = Some(id);
+                                self.pending_request_context = Some(pending_request_context);
                                 self.status = format!("Submitted request {id}");
                                 self.save_snapshot();
                             }
@@ -329,7 +390,8 @@ impl eframe::App for ProbeApp {
 
                 if ui.button("Clear responses").clicked() {
                     self.state.responses.clear();
-                    self.state.ui.selected_response = None;
+                    self.state.ui.clear_selected_response();
+                    self.save_snapshot();
                 }
             });
         });
@@ -399,7 +461,37 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
         return false;
     };
 
-    if let Some(selected_request) = snapshot
+    let mut restored_requests = Vec::new();
+    for draft_id in &snapshot.drafts {
+        let Ok(draft) = storage.load_draft(draft_id) else {
+            continue;
+        };
+        let Ok(persisted_request) = serde_json::from_str::<PersistedRequestDraft>(&draft.content)
+        else {
+            continue;
+        };
+
+        restored_requests.push(crate::state::RequestDraft {
+            method: persisted_request.method,
+            url: persisted_request.url,
+            headers: persisted_request.headers,
+            body: persisted_request.body,
+        });
+    }
+
+    if restored_requests.is_empty() {
+        return false;
+    }
+
+    state.requests = restored_requests;
+    state.ui.selected_request = None;
+    state.ensure_valid_selection();
+
+    if let Ok(Some(selected_request_id)) = storage.load_selected_request() {
+        if let Some(selected_request_index) = state.find_request_index_by_id(&selected_request_id) {
+            state.ui.select_request(selected_request_index);
+        }
+    } else if let Some(selected_request) = snapshot
         .meta
         .get("selected_request")
         .and_then(|selected_request| selected_request.as_u64())
@@ -408,26 +500,6 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
         if selected_request < state.requests.len() {
             state.ui.select_request(selected_request);
         }
-    }
-
-    let Some(draft_id) = snapshot.drafts.first() else {
-        return true;
-    };
-
-    let Ok(draft) = storage.load_draft(draft_id) else {
-        return true;
-    };
-
-    let Ok(persisted_request) = serde_json::from_str::<PersistedRequestDraft>(&draft.content)
-    else {
-        return true;
-    };
-
-    if let Some(request) = state.selected_request_mut() {
-        request.method = persisted_request.method;
-        request.url = persisted_request.url;
-        request.headers = persisted_request.headers;
-        request.body = persisted_request.body;
     }
 
     state.responses.clear();
@@ -450,7 +522,14 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
             .as_ref()
             .and_then(|response_preview| response_preview.size_bytes);
 
-        state.responses.push(crate::state::ResponseSummary {
+        let mut restored_response = crate::state::ResponseSummary {
+            request_id: stored_response.request_id.clone(),
+            request_method: response_preview
+                .as_ref()
+                .and_then(|response_preview| response_preview.request_method.clone()),
+            request_url: response_preview
+                .as_ref()
+                .and_then(|response_preview| response_preview.request_url.clone()),
             status: stored_response.status_code,
             timing_ms: stored_response
                 .duration_ms
@@ -460,7 +539,21 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
             header_count,
             preview_text,
             error: stored_response.summary.clone(),
-        });
+        };
+
+        if let Some(request_id) = restored_response.request_id.as_deref()
+            && let Some(request_index) = state.find_request_index_by_id(request_id)
+            && let Some(request) = state.requests.get(request_index)
+        {
+            if restored_response.request_method.is_none() {
+                restored_response.request_method = Some(request.method.clone());
+            }
+            if restored_response.request_url.is_none() {
+                restored_response.request_url = Some(request.url.clone());
+            }
+        }
+
+        state.responses.push(restored_response);
     }
 
     if let Ok(session_state) = storage.load_session_state() {
@@ -479,9 +572,7 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
                 .position(|response_id| response_id == &selected_response_id)
             {
                 state.ui.select_response(selected_response);
-                if selected_response < state.requests.len() {
-                    state.ui.select_request(selected_response);
-                }
+                select_request_for_response(state, selected_response);
             }
         }
     } else if let Some(selected_response) = snapshot
@@ -492,10 +583,36 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
     {
         if selected_response < state.responses.len() {
             state.ui.select_response(selected_response);
+            select_request_for_response(state, selected_response);
         }
     }
 
+    state.ensure_valid_selection();
     true
+}
+
+fn apply_pending_request_context(
+    summary: &mut crate::state::ResponseSummary,
+    pending_context: Option<&PendingRequestContext>,
+) {
+    let Some(pending_context) = pending_context else {
+        return;
+    };
+
+    summary.request_id = Some(pending_context.request_id.clone());
+    summary.request_method = Some(pending_context.method.clone());
+    summary.request_url = Some(pending_context.url.clone());
+}
+
+fn select_request_for_response(state: &mut AppState, response_index: usize) {
+    if let Some(request_id) = state
+        .responses
+        .get(response_index)
+        .and_then(|response| response.request_id.as_deref())
+        && let Some(request_index) = state.find_request_index_by_id(request_id)
+    {
+        state.ui.select_request(request_index);
+    };
 }
 
 fn format_error(error: &crate::runtime::ErrorInfo) -> String {

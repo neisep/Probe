@@ -43,6 +43,7 @@ pub struct UIState {
 }
 
 /// Lightweight preview/summary for a Draft used by listing and fast UI previews.
+/// The storage layer may enrich the on-disk representation with optional workspace metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DraftPreview {
     /// id of the preview entry (can be same as draft id or derived)
@@ -69,6 +70,10 @@ pub struct ResponsePreview {
     pub response_id: String,
     pub summary: Option<String>,
     #[serde(default)]
+    pub request_method: Option<String>,
+    #[serde(default)]
+    pub request_url: Option<String>,
+    #[serde(default)]
     pub content_preview: Option<String>,
     #[serde(default)]
     pub content_type: Option<String>,
@@ -85,7 +90,8 @@ pub struct ResponsePreview {
     pub created_at: Option<String>,
 }
 
-/// Session-level richer state for UI (selected response, active view, open panels)
+/// Session-level richer state for UI (selected response, active view, open panels).
+/// The storage layer may persist auxiliary request-selection metadata alongside this shape.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionState {
     #[serde(default)]
