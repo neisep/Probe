@@ -1,13 +1,16 @@
 /// Small, explicit types for the async send flow.
 /// Extended with light-weight metadata for UI integration.
 pub type RequestId = u64;
+pub type RequestHeaders = Vec<(String, String)>;
 
 #[derive(Clone, Debug)]
 pub struct AsyncRequest {
     pub url: String,
     /// "GET", "POST", etc. Keep simple for now.
     pub method: String,
-    /// Optional body bytes for POST/PUT.
+    /// Request headers captured from the editor.
+    pub headers: RequestHeaders,
+    /// Optional body bytes for methods that support a payload.
     pub body: Option<Vec<u8>>,
 }
 
@@ -27,7 +30,7 @@ pub struct ResponseInfo {
     /// Raw response body bytes
     pub body: Vec<u8>,
     /// Response headers captured as (name, value) pairs
-    pub headers: Vec<(String, String)>,
+    pub headers: RequestHeaders,
     /// Optional content-type/media hint extracted from headers
     pub content_type: Option<String>,
     /// Duration of the request round-trip in milliseconds
@@ -75,6 +78,7 @@ impl Default for AsyncRequest {
         AsyncRequest {
             url: String::new(),
             method: "GET".to_string(),
+            headers: Vec::new(),
             body: None,
         }
     }

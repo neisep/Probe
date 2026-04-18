@@ -1,4 +1,6 @@
 use crate::runtime::types::*;
+use reqwest::Method;
+use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -228,32 +230,10 @@ impl Runtime {
 }
 
 async fn do_request(client: &reqwest::Client, r: &AsyncRequest) -> Result<ResponseInfo, ErrorInfo> {
-    let method = r.method.to_uppercase();
+    let method = parse_method(&r.method)?;
+    let builder = apply_request_headers(client.request(method.clone(), &r.url), &r.headers)?;
+    let builder = apply_request_body(builder, &method, r.body.as_deref());
     let start = Instant::now();
-
-    // Build request with optional headers/body
-    let builder_res = match method.as_str() {
-        "GET" => Ok(client.get(&r.url)),
-        "POST" => {
-            if let Some(body) = &r.body {
-                Ok(client.post(&r.url).body(body.clone()))
-            } else {
-                Ok(client.post(&r.url))
-            }
-        }
-        other => Err(ErrorInfo::new(
-            format!("unsupported method: {}", other),
-            None,
-            None,
-            Some("unsupported-method".to_string()),
-        )),
-    };
-
-    let builder = match builder_res {
-        Ok(b) => b,
-        Err(e) => return Err(e),
-    };
-
     let resp_res = builder.send().await;
     let duration = start.elapsed().as_millis();
 
@@ -298,4 +278,89 @@ async fn do_request(client: &reqwest::Client, r: &AsyncRequest) -> Result<Respon
             Some("request".to_string()),
         )),
     }
+}
+
+fn parse_method(raw: &str) -> Result<Method, ErrorInfo> {
+    match raw.trim().to_ascii_uppercase().as_str() {
+        "GET" => Ok(Method::GET),
+        "POST" => Ok(Method::POST),
+        "PUT" => Ok(Method::PUT),
+        "PATCH" => Ok(Method::PATCH),
+        "DELETE" => Ok(Method::DELETE),
+        "OPTIONS" => Ok(Method::OPTIONS),
+        "HEAD" => Ok(Method::HEAD),
+        other => Err(ErrorInfo::new(
+            format!("invalid method: {other}"),
+            None,
+            None,
+            Some("invalid-method".to_string()),
+        )),
+    }
+}
+
+fn apply_request_body(
+    builder: reqwest::RequestBuilder,
+    method: &Method,
+    body: Option<&[u8]>,
+) -> reqwest::RequestBuilder {
+    match body {
+        Some(body) if method_supports_body(method) => builder.body(body.to_vec()),
+        _ => builder,
+    }
+}
+
+fn method_supports_body(method: &Method) -> bool {
+    matches!(
+        method.as_str(),
+        "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
+    )
+}
+
+fn apply_request_headers(
+    builder: reqwest::RequestBuilder,
+    headers: &RequestHeaders,
+) -> Result<reqwest::RequestBuilder, ErrorInfo> {
+    let mut header_map = HeaderMap::with_capacity(headers.len());
+
+    for (name, value) in headers {
+        let trimmed_name = name.trim();
+        if trimmed_name.is_empty() && value.trim().is_empty() {
+            continue;
+        }
+        if trimmed_name.is_empty() {
+            return Err(ErrorInfo::new(
+                "invalid request header".to_string(),
+                None,
+                Some("header name is empty".to_string()),
+                Some("invalid-header".to_string()),
+            ));
+        }
+
+        let header_name = match HeaderName::from_bytes(trimmed_name.as_bytes()) {
+            Ok(header_name) => header_name,
+            Err(e) => {
+                return Err(ErrorInfo::new(
+                    "invalid request header".to_string(),
+                    None,
+                    Some(format!("invalid header name `{trimmed_name}`: {e}")),
+                    Some("invalid-header".to_string()),
+                ));
+            }
+        };
+        let header_value = match HeaderValue::from_str(value) {
+            Ok(header_value) => header_value,
+            Err(e) => {
+                return Err(ErrorInfo::new(
+                    "invalid request header".to_string(),
+                    None,
+                    Some(format!("invalid header value for `{trimmed_name}`: {e}")),
+                    Some("invalid-header".to_string()),
+                ));
+            }
+        };
+
+        header_map.append(header_name, header_value);
+    }
+
+    Ok(builder.headers(header_map))
 }

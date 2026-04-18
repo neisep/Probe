@@ -1,8 +1,14 @@
-#[derive(Debug, Clone, Default)]
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ResponseSummary {
     pub request_id: Option<String>,
     pub request_method: Option<String>,
     pub request_url: Option<String>,
+    #[serde(default)]
+    pub request_headers: Vec<(String, String)>,
+    #[serde(default)]
+    pub response_headers: Vec<(String, String)>,
     pub status: Option<u16>,
     pub timing_ms: Option<u128>,
     pub size_bytes: Option<usize>,
