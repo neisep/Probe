@@ -5,8 +5,8 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::persistence::models::{
-    Draft, DraftPreview, ResponsePreview, ResponseSummary, SessionState, Snapshot, UIState,
-    WorkspaceSnapshot,
+    Draft, DraftPreview, ResponsePreview, ResponsePreviewDetail, ResponseSummary, SessionState,
+    Snapshot, UIState, WorkspaceSnapshot,
 };
 
 /// Errors surfaced by the persistence layer.
@@ -104,6 +104,23 @@ impl From<StoredDraftPreview> for DraftPreview {
             preview_snippet: preview.preview_snippet,
             tags: preview.tags,
             created_at: preview.created_at,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredResponsePreview {
+    #[serde(flatten)]
+    preview: ResponsePreview,
+    #[serde(default)]
+    detail: ResponsePreviewDetail,
+}
+
+impl From<&ResponsePreview> for StoredResponsePreview {
+    fn from(preview: &ResponsePreview) -> Self {
+        Self {
+            preview: preview.clone(),
+            detail: ResponsePreviewDetail::default(),
         }
     }
 }
@@ -258,6 +275,13 @@ impl FileStorage {
 
     fn load_stored_draft_preview(&self, id: &str) -> Result<StoredDraftPreview, PersistenceError> {
         self.read_json("draft_previews", id)
+    }
+
+    fn load_stored_response_preview(
+        &self,
+        id: &str,
+    ) -> Result<StoredResponsePreview, PersistenceError> {
+        self.read_json("response_previews", id)
     }
 
     fn load_all_drafts(&self) -> Result<Vec<Draft>, PersistenceError> {
@@ -424,10 +448,34 @@ impl FileStorage {
 
     /* Response preview APIs */
     pub fn save_response_preview(&self, preview: &ResponsePreview) -> Result<(), PersistenceError> {
-        self.write_json("response_previews", &preview.id, preview)
+        let detail = match self.load_stored_response_preview(&preview.id) {
+            Ok(existing_preview) => existing_preview.detail,
+            Err(PersistenceError::NotFound(_)) => ResponsePreviewDetail::default(),
+            Err(error) => return Err(error),
+        };
+        let mut stored_preview = StoredResponsePreview::from(preview);
+        stored_preview.detail = detail;
+
+        self.write_json("response_previews", &preview.id, &stored_preview)
     }
     pub fn load_response_preview(&self, id: &str) -> Result<ResponsePreview, PersistenceError> {
-        self.read_json("response_previews", id)
+        Ok(self.load_stored_response_preview(id)?.preview)
+    }
+    pub fn save_response_preview_detail(
+        &self,
+        id: &str,
+        detail: &ResponsePreviewDetail,
+    ) -> Result<(), PersistenceError> {
+        let mut stored_preview = self.load_stored_response_preview(id)?;
+        stored_preview.detail = detail.clone();
+
+        self.write_json("response_previews", id, &stored_preview)
+    }
+    pub fn load_response_preview_detail(
+        &self,
+        id: &str,
+    ) -> Result<ResponsePreviewDetail, PersistenceError> {
+        Ok(self.load_stored_response_preview(id)?.detail)
     }
     pub fn delete_response_preview(&self, id: &str) -> Result<(), PersistenceError> {
         self.delete_json("response_previews", id)
@@ -495,7 +543,9 @@ impl std::error::Error for PersistenceError {}
 #[cfg(test)]
 mod tests {
     use super::FileStorage;
-    use crate::persistence::models::{Draft, DraftPreview, SessionState};
+    use crate::persistence::models::{
+        Draft, DraftPreview, HeaderEntry, ResponsePreview, ResponsePreviewDetail, SessionState,
+    };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -676,6 +726,143 @@ mod tests {
             Err(error) => panic!("failed to load cleared selected request: {error}"),
         };
         assert_eq!(cleared_request, None);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn response_preview_detail_round_trips_and_survives_preview_updates() {
+        let storage_path = unique_storage_path("response-preview-detail");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let preview = ResponsePreview {
+            id: "response-one".to_owned(),
+            response_id: "response-one".to_owned(),
+            summary: Some("HTTP 200".to_owned()),
+            request_method: Some("GET".to_owned()),
+            request_url: Some("https://example.com/items".to_owned()),
+            content_preview: Some("{\"ok\":true}".to_owned()),
+            content_type: Some("application/json".to_owned()),
+            header_count: Some(2),
+            size_bytes: Some(32),
+            model: None,
+            tokens: None,
+            tags: vec!["history".to_owned()],
+            created_at: None,
+        };
+
+        if let Err(error) = storage.save_response_preview(&preview) {
+            panic!("failed to save response preview: {error}");
+        }
+
+        let detail = ResponsePreviewDetail {
+            request_headers: vec![HeaderEntry {
+                name: "Accept".to_owned(),
+                value: "application/json".to_owned(),
+            }],
+            response_headers: vec![
+                HeaderEntry {
+                    name: "Content-Type".to_owned(),
+                    value: "application/json".to_owned(),
+                },
+                HeaderEntry {
+                    name: "X-Trace-Id".to_owned(),
+                    value: "trace-123".to_owned(),
+                },
+            ],
+        };
+
+        if let Err(error) = storage.save_response_preview_detail(&preview.id, &detail) {
+            panic!("failed to save response preview detail: {error}");
+        }
+
+        let loaded_preview = match storage.load_response_preview(&preview.id) {
+            Ok(preview) => preview,
+            Err(error) => panic!("failed to load response preview: {error}"),
+        };
+        assert_eq!(loaded_preview.request_method.as_deref(), Some("GET"));
+        assert_eq!(
+            loaded_preview.request_url.as_deref(),
+            Some("https://example.com/items")
+        );
+
+        let loaded_detail = match storage.load_response_preview_detail(&preview.id) {
+            Ok(detail) => detail,
+            Err(error) => panic!("failed to load response preview detail: {error}"),
+        };
+        assert_eq!(loaded_detail, detail);
+
+        let updated_preview = ResponsePreview {
+            summary: Some("HTTP 201".to_owned()),
+            size_bytes: Some(64),
+            ..preview.clone()
+        };
+
+        if let Err(error) = storage.save_response_preview(&updated_preview) {
+            panic!("failed to update response preview: {error}");
+        }
+
+        let preserved_detail = match storage.load_response_preview_detail(&preview.id) {
+            Ok(detail) => detail,
+            Err(error) => panic!("failed to reload response preview detail: {error}"),
+        };
+        assert_eq!(preserved_detail, detail);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn legacy_response_preview_files_load_with_empty_detail() {
+        let storage_path = unique_storage_path("legacy-response-preview");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let legacy_preview = ResponsePreview {
+            id: "response-legacy".to_owned(),
+            response_id: "response-legacy".to_owned(),
+            summary: Some("HTTP 204".to_owned()),
+            request_method: Some("DELETE".to_owned()),
+            request_url: Some("https://example.com/items/1".to_owned()),
+            content_preview: None,
+            content_type: None,
+            header_count: Some(0),
+            size_bytes: Some(0),
+            model: None,
+            tokens: None,
+            tags: Vec::new(),
+            created_at: None,
+        };
+
+        if let Err(error) =
+            storage.write_json("response_previews", &legacy_preview.id, &legacy_preview)
+        {
+            panic!("failed to write legacy response preview: {error}");
+        }
+
+        let loaded_preview = match storage.load_response_preview(&legacy_preview.id) {
+            Ok(preview) => preview,
+            Err(error) => panic!("failed to load legacy response preview: {error}"),
+        };
+        assert_eq!(
+            loaded_preview.request_method.as_deref(),
+            legacy_preview.request_method.as_deref()
+        );
+
+        let loaded_detail = match storage.load_response_preview_detail(&legacy_preview.id) {
+            Ok(detail) => detail,
+            Err(error) => panic!("failed to load defaulted response preview detail: {error}"),
+        };
+        assert!(loaded_detail.request_headers.is_empty());
+        assert!(loaded_detail.response_headers.is_empty());
 
         if let Err(error) = fs::remove_dir_all(&storage_path) {
             panic!("failed to clean up test storage directory: {error}");

@@ -63,6 +63,19 @@ pub struct DraftPreview {
     pub created_at: Option<String>,
 }
 
+/// Explicit header entry persisted for future response/request inspection.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HeaderEntry {
+    pub name: String,
+    pub value: String,
+}
+
+impl From<(String, String)> for HeaderEntry {
+    fn from((name, value): (String, String)) -> Self {
+        Self { name, value }
+    }
+}
+
 /// Lightweight preview/summary for a Response for fast UI listing.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponsePreview {
@@ -88,6 +101,15 @@ pub struct ResponsePreview {
     #[serde(default)]
     pub tags: Vec<String>,
     pub created_at: Option<String>,
+}
+
+/// Optional richer response detail stored alongside a response preview.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ResponsePreviewDetail {
+    #[serde(default)]
+    pub request_headers: Vec<HeaderEntry>,
+    #[serde(default)]
+    pub response_headers: Vec<HeaderEntry>,
 }
 
 /// Session-level richer state for UI (selected response, active view, open panels).

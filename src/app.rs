@@ -28,6 +28,7 @@ struct PendingRequestContext {
     request_id: String,
     method: String,
     url: String,
+    headers: Vec<(String, String)>,
 }
 
 pub struct ProbeApp {
@@ -219,6 +220,28 @@ impl ProbeApp {
                 return;
             }
 
+            let response_preview_detail = crate::persistence::models::ResponsePreviewDetail {
+                request_headers: response
+                    .request_headers
+                    .iter()
+                    .cloned()
+                    .map(crate::persistence::models::HeaderEntry::from)
+                    .collect(),
+                response_headers: response
+                    .response_headers
+                    .iter()
+                    .cloned()
+                    .map(crate::persistence::models::HeaderEntry::from)
+                    .collect(),
+            };
+
+            if let Err(error) =
+                storage.save_response_preview_detail(&response_id, &response_preview_detail)
+            {
+                self.status = format!("Save failed: {error}");
+                return;
+            }
+
             response_ids.push(response_id);
         }
 
@@ -300,6 +323,7 @@ impl eframe::App for ProbeApp {
                                 summary.status = Some(info.status);
                                 summary.timing_ms = Some(info.duration_ms);
                                 summary.size_bytes = Some(info.body.len());
+                                summary.response_headers = info.headers.clone();
                                 summary.content_type =
                                     info.header("content-type").or_else(|| info.media_hint());
                                 summary.header_count = Some(info.header_count());
@@ -365,11 +389,13 @@ impl eframe::App for ProbeApp {
                             request_id: AppState::request_id_for_index(selected_request_index),
                             method: req.method.clone(),
                             url: req.url.clone(),
+                            headers: req.headers.clone(),
                         };
 
                         let ar = AsyncRequest {
                             url: req.url.clone(),
                             method: req.method.clone(),
+                            headers: req.headers.clone(),
                             body: req.body.as_ref().map(|b| b.as_bytes().to_vec()),
                         };
                         match runtime.submit_blocking(ar) {
@@ -509,6 +535,7 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
         };
 
         let response_preview = storage.load_response_preview(response_id).ok();
+        let response_preview_detail = storage.load_response_preview_detail(response_id).ok();
         let preview_text = response_preview
             .as_ref()
             .and_then(|response_preview| response_preview.content_preview.clone());
@@ -530,6 +557,26 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
             request_url: response_preview
                 .as_ref()
                 .and_then(|response_preview| response_preview.request_url.clone()),
+            request_headers: response_preview_detail
+                .as_ref()
+                .map(|detail| {
+                    detail
+                        .request_headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
+            response_headers: response_preview_detail
+                .as_ref()
+                .map(|detail| {
+                    detail
+                        .response_headers
+                        .iter()
+                        .map(|header| (header.name.clone(), header.value.clone()))
+                        .collect()
+                })
+                .unwrap_or_default(),
             status: stored_response.status_code,
             timing_ms: stored_response
                 .duration_ms
@@ -602,6 +649,7 @@ fn apply_pending_request_context(
     summary.request_id = Some(pending_context.request_id.clone());
     summary.request_method = Some(pending_context.method.clone());
     summary.request_url = Some(pending_context.url.clone());
+    summary.request_headers = pending_context.headers.clone();
 }
 
 fn select_request_for_response(state: &mut AppState, response_index: usize) {
