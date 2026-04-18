@@ -1,0 +1,10 @@
+{
+  "id": "last",
+  "data": {
+    "body": null,
+    "headers": [],
+    "method": "GET",
+    "selected_request": 0,
+    "url": "https://api.restful-api.dev/objects"
+  }
+}

@@ -1,0 +1,11 @@
+{
+  "id": "selected_request",
+  "workspace_id": "default",
+  "path": "selected-request",
+  "content": "{\"method\":\"GET\",\"url\":\"https://api.restful-api.dev/objects\",\"headers\":[],\"body\":null}",
+  "created_at": null,
+  "tags": [
+    "selected",
+    "mvp"
+  ]
+}

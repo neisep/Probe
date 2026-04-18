@@ -1,0 +1,23 @@
+{
+  "id": "current",
+  "name": "Current Workspace",
+  "workspace_root": null,
+  "created_at": null,
+  "open_files": [
+    "History"
+  ],
+  "drafts": [
+    "selected_request"
+  ],
+  "responses": [
+    "response-0",
+    "response-1",
+    "response-2"
+  ],
+  "meta": {
+    "request_count": 1,
+    "response_count": 3,
+    "selected_request": 0,
+    "selected_response": 2
+  }
+}

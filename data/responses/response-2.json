@@ -1,0 +1,9 @@
+{
+  "id": "response-2",
+  "workspace_id": "default",
+  "request_id": "selected_request",
+  "status_code": 200,
+  "summary": null,
+  "duration_ms": 413,
+  "created_at": null
+}
