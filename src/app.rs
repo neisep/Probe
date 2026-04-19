@@ -5,7 +5,9 @@ use crate::persistence::FileStorage;
 use crate::persistence::Snapshot;
 use crate::persistence::WorkspaceSnapshot;
 use crate::runtime::{
-    AsyncRequest, AsyncRequestResult, Event, ResolutionValues, Runtime, UnresolvedBehavior,
+    AsyncRequest, AsyncRequestResult, Event, ResolutionError, ResolutionErrorKind,
+    ResolutionValues, Runtime, UnresolvedBehavior, resolve_body_text, resolve_headers,
+    resolve_text_with_behavior,
 };
 use crate::state::request::{normalize_folder_path, normalize_request_name};
 use crate::state::{AppState, View};
@@ -25,6 +27,8 @@ struct PersistedRequestDraft {
     folder: String,
     method: String,
     url: String,
+    #[serde(default)]
+    query_params: Vec<(String, String)>,
     #[serde(default)]
     headers: Vec<(String, String)>,
     body: Option<String>,
@@ -122,6 +126,7 @@ impl ProbeApp {
                 "folder": normalize_folder_path(&request.folder),
                 "method": request.method,
                 "url": request.url,
+                "query_params": request.query_params,
                 "headers": request.headers,
                 "body": request.body,
             }),
@@ -156,6 +161,7 @@ impl ProbeApp {
                 folder: normalize_folder_path(&request.folder),
                 method: request.method.clone(),
                 url: request.url.clone(),
+                query_params: request.query_params.clone(),
                 headers: request.headers.clone(),
                 body: request.body.clone(),
             }) {
@@ -423,15 +429,8 @@ impl eframe::App for ProbeApp {
                             self.status = "No request selected".to_owned();
                             return;
                         };
-                        let ar = AsyncRequest {
-                            url: req.url.clone(),
-                            method: req.method.clone(),
-                            headers: req.headers.clone(),
-                            body: req.body.as_ref().map(|b| b.as_bytes().to_vec()),
-                        };
                         let resolution_values = active_resolution_values(&self.state);
-                        let prepared_request = match ar
-                            .resolve_with_behavior(&resolution_values, UnresolvedBehavior::Error)
+                        let prepared_request = match prepare_request_draft(&req, &resolution_values)
                         {
                             Ok(prepared_request) => prepared_request,
                             Err(error) => {
@@ -519,22 +518,19 @@ fn restore_last_snapshot(state: &mut AppState, storage: &FileStorage) {
         }
 
         if let Some(url) = snapshot.data.get("url").and_then(|url| url.as_str()) {
-            request.url = url.to_owned();
+            request.adopt_url_query(url);
         }
 
-        if let Some(headers) = snapshot
+        if let Some(query_params) = snapshot
             .data
-            .get("headers")
-            .and_then(|headers| headers.as_array())
+            .get("query_params")
+            .and_then(parse_string_pairs)
         {
-            request.headers = headers
-                .iter()
-                .filter_map(|header| {
-                    let key = header.get(0).and_then(|key| key.as_str())?;
-                    let value = header.get(1).and_then(|value| value.as_str())?;
-                    Some((key.to_owned(), value.to_owned()))
-                })
-                .collect();
+            request.query_params = query_params;
+        }
+
+        if let Some(headers) = snapshot.data.get("headers").and_then(parse_string_pairs) {
+            request.headers = headers;
         }
 
         request.body = snapshot
@@ -565,10 +561,15 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
             name: String::new(),
             folder: String::new(),
             method: persisted_request.method,
-            url: persisted_request.url,
+            url: String::new(),
+            query_params: Vec::new(),
             headers: persisted_request.headers,
             body: persisted_request.body,
         };
+        restored_request.adopt_url_query(persisted_request.url.as_str());
+        if !persisted_request.query_params.is_empty() {
+            restored_request.query_params = persisted_request.query_params;
+        }
         restored_request.set_request_name(
             normalized_optional_value(Some(persisted_request.name.as_str()))
                 .or_else(|| {
@@ -805,11 +806,99 @@ fn active_resolution_values(state: &AppState) -> ResolutionValues {
     state.active_variables().cloned().unwrap_or_default()
 }
 
+fn prepare_request_draft(
+    request: &crate::state::RequestDraft,
+    resolution_values: &ResolutionValues,
+) -> Result<AsyncRequest, ResolutionError> {
+    let resolved_url = resolve_text_with_behavior(
+        "url",
+        &request.url,
+        resolution_values,
+        UnresolvedBehavior::Error,
+    )?;
+    let resolved_headers = resolve_headers(
+        &request.headers,
+        resolution_values,
+        UnresolvedBehavior::Error,
+    )?;
+    let resolved_body = resolve_body_text(
+        request.body.as_ref().map(|body| body.as_bytes()),
+        resolution_values,
+        UnresolvedBehavior::Error,
+    )?;
+    let mut resolved_query_params = Vec::with_capacity(request.query_params.len());
+
+    for (index, (name, value)) in request.query_params.iter().enumerate() {
+        let resolved_name = resolve_text_with_behavior(
+            &format!("query[{index}].name"),
+            name,
+            resolution_values,
+            UnresolvedBehavior::Error,
+        )?;
+        if resolved_name.trim().is_empty() {
+            continue;
+        }
+
+        let resolved_value = resolve_text_with_behavior(
+            &format!("query[{index}].value"),
+            value,
+            resolution_values,
+            UnresolvedBehavior::Error,
+        )?;
+        resolved_query_params.push((resolved_name, resolved_value));
+    }
+
+    Ok(AsyncRequest {
+        url: build_request_url(&resolved_url, &resolved_query_params)?,
+        method: request.method.clone(),
+        headers: resolved_headers,
+        body: resolved_body,
+    })
+}
+
+fn build_request_url(
+    base_url: &str,
+    query_params: &[(String, String)],
+) -> Result<String, ResolutionError> {
+    if query_params.is_empty() {
+        return Ok(base_url.to_owned());
+    }
+
+    let mut url = reqwest::Url::parse(base_url).map_err(|error| ResolutionError {
+        kind: ResolutionErrorKind::InvalidPlaceholder,
+        target: "url".to_owned(),
+        placeholder: None,
+        details: Some(format!("invalid url: {error}")),
+    })?;
+    {
+        let mut serializer = url.query_pairs_mut();
+        for (name, value) in query_params {
+            serializer.append_pair(name, value);
+        }
+    }
+
+    Ok(url.to_string())
+}
+
 fn normalized_optional_value(value: Option<&str>) -> Option<String> {
     value
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
+}
+
+fn parse_string_pairs(value: &serde_json::Value) -> Option<Vec<(String, String)>> {
+    let pairs = value.as_array()?;
+    Some(
+        pairs
+            .iter()
+            .filter_map(|pair| {
+                let key = pair.get(0).and_then(|key| key.as_str())?;
+                let value = pair.get(1).and_then(|value| value.as_str())?;
+                Some((key.to_owned(), value.to_owned()))
+            })
+            .collect(),
+    )
 }
 
 fn apply_pending_request_context(
@@ -859,5 +948,72 @@ fn create_storage() -> Option<FileStorage> {
             eprintln!("storage init failed: {error}");
             None
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{PersistedRequestDraft, build_request_url, prepare_request_draft};
+    use crate::state::RequestDraft;
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn persisted_request_defaults_query_params_for_legacy_data() {
+        let legacy =
+            r#"{"method":"GET","url":"https://example.com/items","headers":[],"body":null}"#;
+
+        let persisted: PersistedRequestDraft =
+            serde_json::from_str(legacy).expect("legacy request draft should deserialize");
+
+        assert!(persisted.query_params.is_empty());
+    }
+
+    #[test]
+    fn build_request_url_appends_encoded_query_params() {
+        let request_url = build_request_url(
+            "https://example.com/items#details",
+            &[
+                ("page".to_owned(), "1".to_owned()),
+                ("search".to_owned(), "hello world".to_owned()),
+            ],
+        )
+        .expect("query params should build a valid url");
+        let url = reqwest::Url::parse(&request_url).expect("built url should parse");
+        let query_pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(url.fragment(), Some("details"));
+        assert_eq!(
+            query_pairs,
+            vec![
+                ("page".to_owned(), "1".to_owned()),
+                ("search".to_owned(), "hello world".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_request_draft_resolves_query_placeholders() {
+        let mut request = RequestDraft::default_request();
+        request.set_url("https://example.com/items");
+        request.query_params = vec![("search".to_owned(), "{{term}}".to_owned())];
+
+        let mut values = BTreeMap::new();
+        values.insert("term".to_owned(), "hello world".to_owned());
+
+        let prepared = prepare_request_draft(&request, &values)
+            .expect("request draft should resolve placeholders into query params");
+        let url = reqwest::Url::parse(&prepared.url).expect("prepared url should parse");
+        let query_pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(
+            query_pairs,
+            vec![("search".to_owned(), "hello world".to_owned())]
+        );
     }
 }
