@@ -2,13 +2,14 @@
 
 This document is the navigation index for the current architecture
 
-- Architecture status: **Slice 10 complete**
+- Architecture status: **Slice 12 complete**
 - Current app shape:
   - Native Rust + egui desktop REST client
   - Multi-request workspace
   - Structured query parameter editing
   - Structured request auth presets
-  - Native workspace import/export bundle
+  - Native workspace import/export bundle with staged replacement
+  - Pre-send request preview with resolved request inspection
   - Async send + response history
   - Response/request inspection with persisted headers
   - Lightweight environments + `{{var}}` resolution
@@ -38,7 +39,8 @@ This document is the navigation index for the current architecture
    - Emits status/completion events
 
 5. `src/persistence/*`
-   - Saves and restores drafts, responses, environments, and session/workspace state under `./data`
+  - Saves and restores drafts, responses, environments, and session/workspace state under `./data`
+  - Stores automatic pre-import backups under `./data/backups`
 
 ## Module memory map
 
@@ -51,7 +53,10 @@ This document is the navigation index for the current architecture
   - startup/restore
   - save snapshot
   - export/import a versioned workspace bundle
-  - send selected request
+  - stage destructive imports behind a confirmation window
+  - create automatic backups before replacing the current workspace
+  - stage a request preview before submission
+  - send the previewed request
   - apply environment resolution
   - compose encoded request URLs from base URL + saved query rows
   - inject request auth into headers/query params during send preparation
@@ -217,6 +222,16 @@ This document is the navigation index for the current architecture
   - environment variable editing section
   - header editing
   - body editing
+
+### `src/ui/request_preview_modal.rs`
+
+- Purpose:
+  - Read-only pre-send request inspection
+- Key behavior:
+  - shows resolved method + URL
+  - shows final query params and headers
+  - previews request body text
+  - surfaces blocking preparation errors before send
 
 ### Workspace bundle flow
 
