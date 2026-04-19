@@ -11,6 +11,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
   - Main integration seam.
   - Owns app startup, restore/save, runtime polling, send actions, and projection of runtime results into UI state.
   - Owns workspace import/export dialog actions, staged import confirmation, automatic pre-import backups, bundle serialization, and the staged pre-send request preview flow.
+  - Routes ephemeral UI send actions from the sidebar and request editor into the shared preview/send path.
   - Resolves active-environment `{{var}}` placeholders before sending requests.
   - Normalizes request organization metadata before persistence restore/save.
   - Builds final outbound URLs from the base URL plus saved query parameters.
@@ -32,7 +33,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
     - Lightweight environment model.
     - Named key/value store for request substitution.
   - `ui_state.rs`
-    - View selection, selected request/response indices, and the ephemeral request search query.
+    - View selection, selected request/response indices, the ephemeral request search query, and ephemeral pending request actions.
   - `mod.rs`
     - Re-exports state types and shared `StateError`.
 
@@ -64,12 +65,13 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
   - `top_bar.rs`
     - App header, active view, active environment, selected folder, selected request summary.
   - `left_sidebar.rs`
-    - Nested request folder tree, request actions, quick search/filter, environment section, view switching.
+    - Nested request folder tree, request actions, quick search/filter, inline send actions, environment section, view switching.
   - `environment_editor.rs`
     - Compact environment selector/editor UI.
     - Included from `left_sidebar.rs` with `#[path = "environment_editor.rs"]`.
   - `request_panel.rs`
     - Request editor for name, folder path, method, base URL, query params, auth config, environment variables, headers, and body.
+    - Hosts a primary inline Preview & Send action near the request URL.
   - `request_preview_modal.rs`
     - Read-only request preview window shown before a request is submitted.
     - Displays final URL, query params, headers, body preview, and blocking preparation errors.
@@ -96,6 +98,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - Staged replace-workspace import confirmation with automatic recovery backups.
 - Pre-send request preview with resolved request inspection and validation feedback.
 - Request quick search and filter across name, folder, method, and URL.
+- Inline send affordances in the editor and sidebar, plus Ctrl/Cmd+Enter for repeat sends.
 - Async send flow with response history.
 - Response detail inspection with request/response headers.
 - Lightweight environments with active-environment selection.

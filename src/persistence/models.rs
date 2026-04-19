@@ -100,6 +100,8 @@ pub struct ResponsePreview {
     #[serde(default)]
     pub content_preview: Option<String>,
     #[serde(default)]
+    pub content_body: Option<String>,
+    #[serde(default)]
     pub content_type: Option<String>,
     #[serde(default)]
     pub header_count: Option<usize>,
