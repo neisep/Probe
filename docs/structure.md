@@ -10,7 +10,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - `src/app.rs`
   - Main integration seam.
   - Owns app startup, restore/save, runtime polling, send actions, and projection of runtime results into UI state.
-  - Owns workspace import/export dialog actions and bundle serialization.
+  - Owns workspace import/export dialog actions, staged import confirmation, automatic pre-import backups, bundle serialization, and the staged pre-send request preview flow.
   - Resolves active-environment `{{var}}` placeholders before sending requests.
   - Normalizes request organization metadata before persistence restore/save.
   - Builds final outbound URLs from the base URL plus saved query parameters.
@@ -70,6 +70,9 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
     - Included from `left_sidebar.rs` with `#[path = "environment_editor.rs"]`.
   - `request_panel.rs`
     - Request editor for name, folder path, method, base URL, query params, auth config, environment variables, headers, and body.
+  - `request_preview_modal.rs`
+    - Read-only request preview window shown before a request is submitted.
+    - Displays final URL, query params, headers, body preview, and blocking preparation errors.
   - `response_panel.rs`
     - Response history list and response selection.
   - `inspector.rs`
@@ -90,6 +93,8 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - Structured query parameter editing with safe URL composition on send.
 - Structured auth presets for bearer, basic, and API-key flows.
 - Native JSON workspace import/export.
+- Staged replace-workspace import confirmation with automatic recovery backups.
+- Pre-send request preview with resolved request inspection and validation feedback.
 - Async send flow with response history.
 - Response detail inspection with request/response headers.
 - Lightweight environments with active-environment selection.

@@ -2,6 +2,7 @@ pub mod center_panel;
 pub mod inspector;
 pub mod left_sidebar;
 pub mod request_panel;
+pub mod request_preview_modal;
 pub mod response_panel;
 pub mod shell;
 pub mod status_bar;
