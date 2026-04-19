@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::ui::left_sidebar::environment_editor;
 use eframe::egui;
 
 pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
@@ -7,13 +8,106 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
             .selected_request()
             .map(|request| request.method.clone())
             .unwrap_or_default();
+        let current_folder = state
+            .selected_request()
+            .and_then(|request| request.folder_path())
+            .unwrap_or_default()
+            .to_owned();
+        let existing_folders = state.folder_paths();
+        let mut pending_folder_selection = None;
 
         ui.horizontal(|ui| {
             ui.vertical(|ui| {
                 ui.heading("Request");
                 ui.add_space(4.0);
 
-                // Method + URL on a single row for compactness
+                ui.horizontal(|ui| {
+                    if let Some(req) = state.selected_request_mut() {
+                        let name_response = ui.add(
+                            egui::TextEdit::singleline(&mut req.name)
+                                .desired_width(220.0)
+                                .hint_text("Request name"),
+                        );
+                        if name_response.lost_focus() {
+                            let name = req.name.clone();
+                            req.set_request_name(&name);
+                        }
+                    } else {
+                        let mut request_name = String::new();
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut request_name)
+                                .desired_width(220.0)
+                                .hint_text("Request name"),
+                        );
+                    }
+                });
+
+                ui.add_space(4.0);
+
+                ui.horizontal(|ui| {
+                    ui.label("Folder");
+                    if let Some(req) = state.selected_request_mut() {
+                        let folder_response = ui.add(
+                            egui::TextEdit::singleline(&mut req.folder)
+                                .desired_width(220.0)
+                                .hint_text("Collections/API"),
+                        );
+                        if folder_response.lost_focus() {
+                            let folder = req.folder.clone();
+                            req.set_folder_path(&folder);
+                        }
+                    } else {
+                        let mut request_folder = String::new();
+                        ui.add_enabled(
+                            false,
+                            egui::TextEdit::singleline(&mut request_folder)
+                                .desired_width(220.0)
+                                .hint_text("Collections/API"),
+                        );
+                    }
+
+                    egui::ComboBox::from_id_salt("request_folder_picker")
+                        .selected_text(if current_folder.is_empty() {
+                            "Move to..."
+                        } else {
+                            "Pick existing"
+                        })
+                        .width(150.0)
+                        .show_ui(ui, |ui| {
+                            for folder in &existing_folders {
+                                let is_selected = folder == &current_folder;
+                                if ui.selectable_label(is_selected, folder).clicked() {
+                                    pending_folder_selection = Some(folder.clone());
+                                }
+                            }
+                        });
+
+                    if ui
+                        .add_enabled(
+                            !current_folder.is_empty(),
+                            egui::Button::new("Clear").small(),
+                        )
+                        .clicked()
+                    {
+                        pending_folder_selection = Some(String::new());
+                    }
+                });
+
+                if let Some(folder) = pending_folder_selection {
+                    if let Some(req) = state.selected_request_mut() {
+                        req.set_folder_path(&folder);
+                    }
+                }
+
+                if current_folder.is_empty() {
+                    ui.small("Stored at the workspace root. Use / to create nested folders.");
+                } else {
+                    ui.small(format!("Current folder: {current_folder}"));
+                }
+
+                ui.add_space(4.0);
+
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_label("")
                         .selected_text(selected_method)
@@ -41,6 +135,9 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
         });
 
         ui.separator();
+
+        environment_editor::show_request_section(ui, state);
+        ui.add_space(6.0);
 
         if let Some(req) = state.selected_request_mut() {
             ui.collapsing("Headers", |ui| {

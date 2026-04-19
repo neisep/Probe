@@ -20,6 +20,17 @@ pub struct Draft {
     pub tags: Vec<String>,
 }
 
+/// Lightweight request organization metadata stored alongside a draft/preview.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequestMetadata {
+    /// Optional human-friendly request name shown in request lists.
+    #[serde(default)]
+    pub request_name: Option<String>,
+    /// Optional folder/group path for lightweight organization.
+    #[serde(default)]
+    pub folder_path: Option<String>,
+}
+
 /// Summary of a response for UI listing and quick restore.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseSummary {
@@ -123,6 +134,42 @@ pub struct SessionState {
     #[serde(default)]
     pub open_panels: Vec<String>,
     pub updated_at: Option<String>,
+}
+
+/// A single key/value variable stored in an environment.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentEntry {
+    pub key: String,
+    pub value: String,
+}
+
+impl From<(String, String)> for EnvironmentEntry {
+    fn from((key, value): (String, String)) -> Self {
+        Self { key, value }
+    }
+}
+
+/// Lightweight named environment persisted for request templating/substitution.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Environment {
+    /// Stable identifier for the environment (validated by storage layer).
+    pub id: String,
+    /// Human-friendly label shown in the UI.
+    pub name: String,
+    /// Persisted key/value entries.
+    #[serde(default)]
+    pub entries: Vec<EnvironmentEntry>,
+}
+
+/// Compact environment payload for restoring the available environments and selection together.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EnvironmentSnapshot {
+    /// Selected environment id, if any.
+    #[serde(default)]
+    pub active_environment: Option<String>,
+    /// Persisted environments to restore.
+    #[serde(default)]
+    pub environments: Vec<Environment>,
 }
 
 /// Legacy/opaque snapshot used by existing app code: keeps an id and arbitrary JSON payload.

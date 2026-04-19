@@ -1,14 +1,28 @@
 use crate::state::{AppState, View};
+use crate::ui::left_sidebar::environment_editor;
 use eframe::egui;
 
 pub fn show_topbar(ui: &mut egui::Ui, state: &mut AppState, active_view: View) {
     egui::Panel::top("top_bar").show_inside(ui, |ui| {
         ui.horizontal(|ui| {
+            let selected_folder = state
+                .selected_request()
+                .and_then(|request| request.folder_path())
+                .unwrap_or("Root")
+                .to_owned();
+
             ui.heading("Probe");
             ui.separator();
             ui.label("Native Rust + egui REST client");
             ui.separator();
             ui.small(format!("View: {}", active_view.label()));
+            ui.separator();
+            ui.small(format!(
+                "Env: {}",
+                environment_editor::active_environment_label(state)
+            ));
+            ui.separator();
+            ui.small(format!("Folder: {selected_folder}"));
 
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if let Some(req) = state.selected_request() {

@@ -139,6 +139,16 @@ impl Runtime {
         Ok(id)
     }
 
+    pub async fn submit_resolved(
+        &self,
+        req: AsyncRequest,
+        values: &ResolutionValues,
+        behavior: UnresolvedBehavior,
+    ) -> Result<RequestId, ErrorInfo> {
+        let prepared = prepare_request(&req, values, behavior).map_err(|e| e.to_error_info())?;
+        self.submit(prepared).await.map_err(submit_error)
+    }
+
     /// Poll (and drain) pending events. Designed for UI-safe polling.
     pub async fn poll_events(&self) -> Vec<Event> {
         let mut st = self.inner.state.lock().await;
@@ -170,6 +180,16 @@ impl Runtime {
             .blocking_send(item)
             .map_err(|e| format!("submit failed: {}", e))?;
         Ok(id)
+    }
+
+    pub fn submit_resolved_blocking(
+        &self,
+        req: AsyncRequest,
+        values: &ResolutionValues,
+        behavior: UnresolvedBehavior,
+    ) -> Result<RequestId, ErrorInfo> {
+        let prepared = prepare_request(&req, values, behavior).map_err(|e| e.to_error_info())?;
+        self.submit_blocking(prepared).map_err(submit_error)
     }
 
     /// Synchronous/blocking poll of runtime events. Drains available events.
@@ -363,4 +383,21 @@ fn apply_request_headers(
     }
 
     Ok(builder.headers(header_map))
+}
+
+pub fn prepare_request(
+    req: &AsyncRequest,
+    values: &ResolutionValues,
+    behavior: UnresolvedBehavior,
+) -> Result<AsyncRequest, ResolutionError> {
+    req.resolve_with_behavior(values, behavior)
+}
+
+fn submit_error(details: String) -> ErrorInfo {
+    ErrorInfo::new(
+        "submit failed".to_string(),
+        None,
+        Some(details),
+        Some("submit".to_string()),
+    )
 }

@@ -1,9 +1,11 @@
 pub mod app_state;
+pub mod environment;
 pub mod request;
 pub mod response;
 pub mod ui_state;
 
 pub use app_state::AppState;
+pub use environment::Environment;
 pub use request::RequestDraft;
 pub use response::ResponseSummary;
 pub use ui_state::{UIState, View};
