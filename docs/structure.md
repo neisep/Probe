@@ -32,7 +32,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
     - Lightweight environment model.
     - Named key/value store for request substitution.
   - `ui_state.rs`
-    - View selection and selected request/response indices.
+    - View selection, selected request/response indices, and the ephemeral request search query.
   - `mod.rs`
     - Re-exports state types and shared `StateError`.
 
@@ -64,7 +64,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
   - `top_bar.rs`
     - App header, active view, active environment, selected folder, selected request summary.
   - `left_sidebar.rs`
-    - Nested request folder tree, request actions, environment section, view switching.
+    - Nested request folder tree, request actions, quick search/filter, environment section, view switching.
   - `environment_editor.rs`
     - Compact environment selector/editor UI.
     - Included from `left_sidebar.rs` with `#[path = "environment_editor.rs"]`.
@@ -95,6 +95,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - Native JSON workspace import/export.
 - Staged replace-workspace import confirmation with automatic recovery backups.
 - Pre-send request preview with resolved request inspection and validation feedback.
+- Request quick search and filter across name, folder, method, and URL.
 - Async send flow with response history.
 - Response detail inspection with request/response headers.
 - Lightweight environments with active-environment selection.

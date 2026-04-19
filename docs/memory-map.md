@@ -2,7 +2,7 @@
 
 This document is the navigation index for the current architecture
 
-- Architecture status: **Slice 12 complete**
+- Architecture status: **Slice 13 complete**
 - Current app shape:
   - Native Rust + egui desktop REST client
   - Multi-request workspace
@@ -10,6 +10,7 @@ This document is the navigation index for the current architecture
   - Structured request auth presets
   - Native workspace import/export bundle with staged replacement
   - Pre-send request preview with resolved request inspection
+  - Request quick search and filter in the sidebar
   - Async send + response history
   - Response/request inspection with persisted headers
   - Lightweight environments + `{{var}}` resolution
@@ -122,6 +123,7 @@ This document is the navigation index for the current architecture
   - selected request index
   - selected response index
   - current view
+  - ephemeral request search query
 
 ### `src/runtime/types.rs`
 
@@ -195,6 +197,7 @@ This document is the navigation index for the current architecture
   - Environment selector entrypoint
 - Key behavior:
   - request create/duplicate/delete/select
+  - request quick search and filter
   - nested request folder tree
   - environment section
   - view switching
