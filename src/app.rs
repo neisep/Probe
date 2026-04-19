@@ -1,3 +1,4 @@
+use base64::Engine;
 use eframe::egui;
 use std::time::Duration;
 
@@ -9,7 +10,9 @@ use crate::runtime::{
     ResolutionValues, Runtime, UnresolvedBehavior, resolve_body_text, resolve_headers,
     resolve_text_with_behavior,
 };
-use crate::state::request::{normalize_folder_path, normalize_request_name};
+use crate::state::request::{
+    ApiKeyLocation, RequestAuth, normalize_folder_path, normalize_request_name,
+};
 use crate::state::{AppState, View};
 use crate::ui::shell;
 use serde::{Deserialize, Serialize};
@@ -29,6 +32,8 @@ struct PersistedRequestDraft {
     url: String,
     #[serde(default)]
     query_params: Vec<(String, String)>,
+    #[serde(default)]
+    auth: RequestAuth,
     #[serde(default)]
     headers: Vec<(String, String)>,
     body: Option<String>,
@@ -127,6 +132,7 @@ impl ProbeApp {
                 "method": request.method,
                 "url": request.url,
                 "query_params": request.query_params,
+                "auth": request.auth,
                 "headers": request.headers,
                 "body": request.body,
             }),
@@ -162,6 +168,7 @@ impl ProbeApp {
                 method: request.method.clone(),
                 url: request.url.clone(),
                 query_params: request.query_params.clone(),
+                auth: request.auth.clone(),
                 headers: request.headers.clone(),
                 body: request.body.clone(),
             }) {
@@ -529,6 +536,14 @@ fn restore_last_snapshot(state: &mut AppState, storage: &FileStorage) {
             request.query_params = query_params;
         }
 
+        if let Some(auth) = snapshot
+            .data
+            .get("auth")
+            .and_then(|auth| serde_json::from_value::<RequestAuth>(auth.clone()).ok())
+        {
+            request.auth = auth;
+        }
+
         if let Some(headers) = snapshot.data.get("headers").and_then(parse_string_pairs) {
             request.headers = headers;
         }
@@ -563,6 +578,7 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
             method: persisted_request.method,
             url: String::new(),
             query_params: Vec::new(),
+            auth: persisted_request.auth,
             headers: persisted_request.headers,
             body: persisted_request.body,
         };
@@ -816,7 +832,7 @@ fn prepare_request_draft(
         resolution_values,
         UnresolvedBehavior::Error,
     )?;
-    let resolved_headers = resolve_headers(
+    let mut resolved_headers = resolve_headers(
         &request.headers,
         resolution_values,
         UnresolvedBehavior::Error,
@@ -847,6 +863,9 @@ fn prepare_request_draft(
         )?;
         resolved_query_params.push((resolved_name, resolved_value));
     }
+    let resolved_auth = resolve_request_auth(&request.auth, resolution_values)?;
+    apply_auth_headers(&mut resolved_headers, &resolved_auth.headers)?;
+    resolved_query_params.extend(resolved_auth.query_params);
 
     Ok(AsyncRequest {
         url: build_request_url(&resolved_url, &resolved_query_params)?,
@@ -854,6 +873,136 @@ fn prepare_request_draft(
         headers: resolved_headers,
         body: resolved_body,
     })
+}
+
+#[derive(Default)]
+struct ResolvedAuth {
+    headers: Vec<(String, String)>,
+    query_params: Vec<(String, String)>,
+}
+
+fn resolve_request_auth(
+    auth: &RequestAuth,
+    resolution_values: &ResolutionValues,
+) -> Result<ResolvedAuth, ResolutionError> {
+    match auth {
+        RequestAuth::None => Ok(ResolvedAuth::default()),
+        RequestAuth::Bearer { token } => {
+            let token = resolve_text_with_behavior(
+                "auth.bearer.token",
+                token,
+                resolution_values,
+                UnresolvedBehavior::Error,
+            )?;
+            if token.trim().is_empty() {
+                return Err(invalid_request_error(
+                    "auth",
+                    "bearer token cannot be empty",
+                ));
+            }
+
+            Ok(ResolvedAuth {
+                headers: vec![("Authorization".to_owned(), format!("Bearer {token}"))],
+                query_params: Vec::new(),
+            })
+        }
+        RequestAuth::Basic { username, password } => {
+            let username = resolve_text_with_behavior(
+                "auth.basic.username",
+                username,
+                resolution_values,
+                UnresolvedBehavior::Error,
+            )?;
+            let password = resolve_text_with_behavior(
+                "auth.basic.password",
+                password,
+                resolution_values,
+                UnresolvedBehavior::Error,
+            )?;
+            if username.is_empty() && password.is_empty() {
+                return Err(invalid_request_error(
+                    "auth",
+                    "basic auth requires a username or password",
+                ));
+            }
+
+            let encoded = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
+            Ok(ResolvedAuth {
+                headers: vec![("Authorization".to_owned(), format!("Basic {encoded}"))],
+                query_params: Vec::new(),
+            })
+        }
+        RequestAuth::ApiKey {
+            location,
+            name,
+            value,
+        } => {
+            let name = resolve_text_with_behavior(
+                "auth.api_key.name",
+                name,
+                resolution_values,
+                UnresolvedBehavior::Error,
+            )?;
+            let value = resolve_text_with_behavior(
+                "auth.api_key.value",
+                value,
+                resolution_values,
+                UnresolvedBehavior::Error,
+            )?;
+            if name.trim().is_empty() {
+                return Err(invalid_request_error(
+                    "auth",
+                    "api key name cannot be empty",
+                ));
+            }
+            if value.trim().is_empty() {
+                return Err(invalid_request_error(
+                    "auth",
+                    "api key value cannot be empty",
+                ));
+            }
+
+            match location {
+                ApiKeyLocation::Header => Ok(ResolvedAuth {
+                    headers: vec![(name, value)],
+                    query_params: Vec::new(),
+                }),
+                ApiKeyLocation::Query => Ok(ResolvedAuth {
+                    headers: Vec::new(),
+                    query_params: vec![(name, value)],
+                }),
+            }
+        }
+    }
+}
+
+fn apply_auth_headers(
+    existing_headers: &mut Vec<(String, String)>,
+    auth_headers: &[(String, String)],
+) -> Result<(), ResolutionError> {
+    for (auth_name, _auth_value) in auth_headers {
+        if existing_headers
+            .iter()
+            .any(|(name, _value)| name.eq_ignore_ascii_case(auth_name))
+        {
+            return Err(invalid_request_error(
+                "auth",
+                &format!("auth header '{auth_name}' conflicts with an existing header"),
+            ));
+        }
+    }
+
+    existing_headers.extend(auth_headers.iter().cloned());
+    Ok(())
+}
+
+fn invalid_request_error(target: &str, details: &str) -> ResolutionError {
+    ResolutionError {
+        kind: ResolutionErrorKind::InvalidPlaceholder,
+        target: target.to_owned(),
+        placeholder: None,
+        details: Some(details.to_owned()),
+    }
 }
 
 fn build_request_url(
@@ -955,6 +1104,7 @@ fn create_storage() -> Option<FileStorage> {
 mod tests {
     use super::{PersistedRequestDraft, build_request_url, prepare_request_draft};
     use crate::state::RequestDraft;
+    use crate::state::request::{ApiKeyLocation, RequestAuth};
     use std::collections::BTreeMap;
 
     #[test]
@@ -966,6 +1116,7 @@ mod tests {
             serde_json::from_str(legacy).expect("legacy request draft should deserialize");
 
         assert!(persisted.query_params.is_empty());
+        assert_eq!(persisted.auth, RequestAuth::None);
     }
 
     #[test]
@@ -1014,6 +1165,88 @@ mod tests {
         assert_eq!(
             query_pairs,
             vec![("search".to_owned(), "hello world".to_owned())]
+        );
+    }
+
+    #[test]
+    fn prepare_request_draft_injects_bearer_auth_header() {
+        let mut request = RequestDraft::default_request();
+        request.auth = RequestAuth::Bearer {
+            token: "{{TOKEN}}".to_owned(),
+        };
+        let mut values = BTreeMap::new();
+        values.insert("TOKEN".to_owned(), "secret".to_owned());
+
+        let prepared =
+            prepare_request_draft(&request, &values).expect("bearer auth should resolve");
+
+        assert!(
+            prepared
+                .headers
+                .iter()
+                .any(|(name, value)| name == "Authorization" && value == "Bearer secret")
+        );
+    }
+
+    #[test]
+    fn prepare_request_draft_injects_basic_auth_header() {
+        let mut request = RequestDraft::default_request();
+        request.auth = RequestAuth::Basic {
+            username: "aladdin".to_owned(),
+            password: "open sesame".to_owned(),
+        };
+
+        let prepared =
+            prepare_request_draft(&request, &BTreeMap::new()).expect("basic auth should encode");
+
+        assert!(prepared.headers.iter().any(|(name, value)| {
+            name == "Authorization" && value == "Basic YWxhZGRpbjpvcGVuIHNlc2FtZQ=="
+        }));
+    }
+
+    #[test]
+    fn prepare_request_draft_injects_query_api_key() {
+        let mut request = RequestDraft::default_request();
+        request.auth = RequestAuth::ApiKey {
+            location: ApiKeyLocation::Query,
+            name: "api_key".to_owned(),
+            value: "{{KEY}}".to_owned(),
+        };
+        let mut values = BTreeMap::new();
+        values.insert("KEY".to_owned(), "secret".to_owned());
+
+        let prepared =
+            prepare_request_draft(&request, &values).expect("query api key should resolve");
+        let url = reqwest::Url::parse(&prepared.url).expect("prepared url should parse");
+        let query_pairs: Vec<(String, String)> = url
+            .query_pairs()
+            .map(|(name, value)| (name.into_owned(), value.into_owned()))
+            .collect();
+
+        assert_eq!(
+            query_pairs,
+            vec![("api_key".to_owned(), "secret".to_owned())]
+        );
+    }
+
+    #[test]
+    fn prepare_request_draft_rejects_auth_header_conflicts() {
+        let mut request = RequestDraft::default_request();
+        request.headers = vec![("Authorization".to_owned(), "Bearer manual".to_owned())];
+        request.auth = RequestAuth::Bearer {
+            token: "generated".to_owned(),
+        };
+
+        let error = prepare_request_draft(&request, &BTreeMap::new())
+            .expect_err("conflicting authorization header should fail");
+
+        assert_eq!(error.target, "auth");
+        assert!(
+            error
+                .details
+                .as_deref()
+                .unwrap_or_default()
+                .contains("conflicts with an existing header")
         );
     }
 }

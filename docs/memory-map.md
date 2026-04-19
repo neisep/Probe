@@ -2,11 +2,12 @@
 
 This document is the navigation index for the current architecture
 
-- Architecture status: **Slice 8 complete**
+- Architecture status: **Slice 9 complete**
 - Current app shape:
   - Native Rust + egui desktop REST client
   - Multi-request workspace
   - Structured query parameter editing
+  - Structured request auth presets
   - Async send + response history
   - Response/request inspection with persisted headers
   - Lightweight environments + `{{var}}` resolution
@@ -51,6 +52,7 @@ This document is the navigation index for the current architecture
   - send selected request
   - apply environment resolution
   - compose encoded request URLs from base URL + saved query rows
+  - inject request auth into headers/query params during send preparation
   - project runtime results into `ResponseSummary`
   - restore workspace/session/environment state
 
@@ -81,6 +83,7 @@ This document is the navigation index for the current architecture
   - method
   - base url
   - query parameter rows
+  - auth mode + auth inputs
   - headers
   - optional body
 
@@ -208,6 +211,7 @@ This document is the navigation index for the current architecture
   - existing-folder picker
   - method/url editing
   - query parameter editing
+  - auth mode editing
   - environment variable editing section
   - header editing
   - body editing
