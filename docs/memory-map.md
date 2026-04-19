@@ -2,12 +2,13 @@
 
 This document is the navigation index for the current architecture
 
-- Architecture status: **Slice 9 complete**
+- Architecture status: **Slice 10 complete**
 - Current app shape:
   - Native Rust + egui desktop REST client
   - Multi-request workspace
   - Structured query parameter editing
   - Structured request auth presets
+  - Native workspace import/export bundle
   - Async send + response history
   - Response/request inspection with persisted headers
   - Lightweight environments + `{{var}}` resolution
@@ -49,6 +50,7 @@ This document is the navigation index for the current architecture
 - Key responsibilities:
   - startup/restore
   - save snapshot
+  - export/import a versioned workspace bundle
   - send selected request
   - apply environment resolution
   - compose encoded request URLs from base URL + saved query rows
@@ -215,6 +217,11 @@ This document is the navigation index for the current architecture
   - environment variable editing section
   - header editing
   - body editing
+
+### Workspace bundle flow
+
+- Export serializes the current requests, responses, environments, and UI selection state to a versioned JSON bundle.
+- Import validates the bundle version, replaces the in-memory workspace, rehydrates response/request links, and persists the imported workspace through the normal snapshot path.
 
 ### `src/ui/response_panel.rs`
 

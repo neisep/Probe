@@ -1,6 +1,6 @@
 use base64::Engine;
 use eframe::egui;
-use std::time::Duration;
+use std::{fs, time::Duration};
 
 use crate::persistence::FileStorage;
 use crate::persistence::Snapshot;
@@ -21,6 +21,7 @@ use serde_json::json;
 const LEGACY_SNAPSHOT_ID: &str = "last";
 const WORKSPACE_SNAPSHOT_ID: &str = "current";
 const DEFAULT_WORKSPACE_ID: &str = "default";
+const WORKSPACE_BUNDLE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedRequestDraft {
@@ -37,6 +38,21 @@ struct PersistedRequestDraft {
     #[serde(default)]
     headers: Vec<(String, String)>,
     body: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct WorkspaceBundle {
+    format_version: u32,
+    #[serde(default)]
+    requests: Vec<crate::state::RequestDraft>,
+    #[serde(default)]
+    responses: Vec<crate::state::ResponseSummary>,
+    #[serde(default)]
+    environments: Vec<crate::state::Environment>,
+    #[serde(default)]
+    active_environment: Option<usize>,
+    #[serde(default)]
+    ui: crate::state::UIState,
 }
 
 #[derive(Debug, Clone)]
@@ -101,6 +117,67 @@ impl ProbeApp {
                 pending_request_context: None,
             },
         }
+    }
+
+    fn export_workspace(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Probe workspace", &["json"])
+            .set_file_name("workspace.probe.json")
+            .save_file()
+        else {
+            return;
+        };
+
+        let json = match workspace_bundle_to_json(&self.state) {
+            Ok(json) => json,
+            Err(error) => {
+                self.status = format!("Export failed: {error}");
+                return;
+            }
+        };
+
+        if let Err(error) = fs::write(&path, json) {
+            self.status = format!("Export failed: {error}");
+            return;
+        }
+
+        self.status = format!("Workspace exported to {}", path.display());
+    }
+
+    fn import_workspace(&mut self) {
+        if self.pending_request.is_some() {
+            self.status = "Import unavailable while a request is running".to_owned();
+            return;
+        }
+
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Probe workspace", &["json"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        let contents = match fs::read_to_string(&path) {
+            Ok(contents) => contents,
+            Err(error) => {
+                self.status = format!("Import failed: {error}");
+                return;
+            }
+        };
+
+        let imported_state = match workspace_bundle_from_json(&contents) {
+            Ok(imported_state) => imported_state,
+            Err(error) => {
+                self.status = format!("Import failed: {error}");
+                return;
+            }
+        };
+
+        self.state = imported_state;
+        self.pending_request = None;
+        self.pending_request_context = None;
+        self.save_snapshot();
+        self.status = format!("Workspace imported from {}", path.display());
     }
 
     fn save_snapshot(&mut self) {
@@ -423,6 +500,20 @@ impl eframe::App for ProbeApp {
                     if !self.status.starts_with("Save failed") {
                         self.status = "Draft saved".to_owned();
                     }
+                }
+
+                if ui.button("Export workspace").clicked() {
+                    self.export_workspace();
+                }
+
+                if ui
+                    .add_enabled(
+                        self.pending_request.is_none(),
+                        egui::Button::new("Import workspace"),
+                    )
+                    .clicked()
+                {
+                    self.import_workspace();
                 }
 
                 if ui.button("Send selected request").clicked() {
@@ -822,6 +913,114 @@ fn active_resolution_values(state: &AppState) -> ResolutionValues {
     state.active_variables().cloned().unwrap_or_default()
 }
 
+fn workspace_bundle_to_json(state: &AppState) -> Result<String, String> {
+    serde_json::to_string_pretty(&build_workspace_bundle(state)).map_err(|error| error.to_string())
+}
+
+fn workspace_bundle_from_json(json: &str) -> Result<AppState, String> {
+    let bundle: WorkspaceBundle = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    state_from_workspace_bundle(bundle)
+}
+
+fn build_workspace_bundle(state: &AppState) -> WorkspaceBundle {
+    WorkspaceBundle {
+        format_version: WORKSPACE_BUNDLE_FORMAT_VERSION,
+        requests: state.requests.clone(),
+        responses: state.responses.clone(),
+        environments: state.environments.clone(),
+        active_environment: state.active_environment,
+        ui: state.ui.clone(),
+    }
+}
+
+fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, String> {
+    if bundle.format_version != WORKSPACE_BUNDLE_FORMAT_VERSION {
+        return Err(format!(
+            "unsupported workspace format version {}",
+            bundle.format_version
+        ));
+    }
+
+    let mut state = AppState {
+        ui: bundle.ui,
+        requests: bundle.requests,
+        responses: bundle.responses,
+        environments: bundle.environments,
+        active_environment: bundle.active_environment,
+    };
+
+    normalize_imported_state(&mut state)?;
+    hydrate_response_request_metadata(&mut state);
+    state.ensure_valid_selection();
+    Ok(state)
+}
+
+fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
+    for request in &mut state.requests {
+        let method = request.method.trim().to_uppercase();
+        if method.is_empty() {
+            return Err("imported request method cannot be empty".to_owned());
+        }
+        let url = request.url.trim().to_owned();
+        if url.is_empty() {
+            return Err("imported request url cannot be empty".to_owned());
+        }
+
+        let name = request.name.clone();
+        let folder = request.folder.clone();
+        request.method = method;
+        request.set_request_name(&name);
+        request.set_folder_path(&folder);
+        request.set_url(&url);
+    }
+
+    let mut environment_names = std::collections::BTreeSet::new();
+    for environment in &mut state.environments {
+        let name = environment.name.trim().to_owned();
+        if name.is_empty() {
+            return Err("imported environment name cannot be empty".to_owned());
+        }
+        if !environment_names.insert(name.clone()) {
+            return Err(format!("duplicate imported environment '{name}'"));
+        }
+        environment.name = name;
+    }
+
+    Ok(())
+}
+
+fn hydrate_response_request_metadata(state: &mut AppState) {
+    let request_lookup: std::collections::BTreeMap<String, (String, String)> = state
+        .requests
+        .iter()
+        .enumerate()
+        .map(|(index, request)| {
+            (
+                AppState::request_id_for_index(index),
+                (request.method.clone(), request.url.clone()),
+            )
+        })
+        .collect();
+
+    for response in &mut state.responses {
+        let Some(request_id) = response.request_id.clone() else {
+            continue;
+        };
+
+        let Some((method, url)) = request_lookup.get(&request_id) else {
+            response.request_id = None;
+            continue;
+        };
+
+        if response.request_method.is_none() {
+            response.request_method = Some(method.clone());
+        }
+        if response.request_url.is_none() {
+            response.request_url = Some(url.clone());
+        }
+    }
+}
+
 fn prepare_request_draft(
     request: &crate::state::RequestDraft,
     resolution_values: &ResolutionValues,
@@ -1102,9 +1301,12 @@ fn create_storage() -> Option<FileStorage> {
 
 #[cfg(test)]
 mod tests {
-    use super::{PersistedRequestDraft, build_request_url, prepare_request_draft};
-    use crate::state::RequestDraft;
+    use super::{
+        PersistedRequestDraft, build_request_url, prepare_request_draft,
+        workspace_bundle_from_json, workspace_bundle_to_json,
+    };
     use crate::state::request::{ApiKeyLocation, RequestAuth};
+    use crate::state::{Environment, RequestDraft, View};
     use std::collections::BTreeMap;
 
     #[test]
@@ -1248,5 +1450,49 @@ mod tests {
                 .unwrap_or_default()
                 .contains("conflicts with an existing header")
         );
+    }
+
+    #[test]
+    fn workspace_bundle_round_trips_state() {
+        let mut state = crate::state::AppState::new();
+        let mut request = RequestDraft::default_request();
+        request.set_request_name("List users");
+        request.set_folder_path("Collections/API");
+        request.query_params = vec![("page".to_owned(), "1".to_owned())];
+        state.requests = vec![request];
+        state.responses = vec![crate::state::ResponseSummary {
+            request_id: Some("request-0".to_owned()),
+            status: Some(200),
+            ..crate::state::ResponseSummary::default()
+        }];
+        state.environments = vec![Environment::default()];
+        state.active_environment = Some(0);
+        state.ui.select_request(0);
+        state.ui.select_response(0);
+        state.ui.set_view(View::History);
+
+        let json = workspace_bundle_to_json(&state).expect("workspace should serialize");
+        let restored_state =
+            workspace_bundle_from_json(&json).expect("workspace should deserialize");
+
+        assert_eq!(restored_state.requests.len(), 1);
+        assert_eq!(restored_state.responses.len(), 1);
+        assert_eq!(restored_state.ui.selected_request, Some(0));
+        assert_eq!(restored_state.ui.selected_response, Some(0));
+        assert_eq!(restored_state.ui.view, View::History);
+        assert_eq!(
+            restored_state.requests[0].folder_path(),
+            Some("Collections/API")
+        );
+    }
+
+    #[test]
+    fn workspace_bundle_rejects_unknown_format_version() {
+        let json = r#"{"format_version":99,"requests":[],"responses":[],"environments":[],"active_environment":null,"ui":{"selected_request":null,"selected_response":null,"view":"Editor"}}"#;
+
+        let error = workspace_bundle_from_json(json)
+            .expect_err("unsupported workspace bundle version should fail");
+
+        assert!(error.contains("unsupported workspace format version"));
     }
 }
