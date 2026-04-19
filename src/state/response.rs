@@ -15,6 +15,8 @@ pub struct ResponseSummary {
     pub content_type: Option<String>,
     pub header_count: Option<usize>,
     pub preview_text: Option<String>,
+    #[serde(default)]
+    pub body_text: Option<String>,
     pub error: Option<String>,
 }
 

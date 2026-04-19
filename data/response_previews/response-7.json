@@ -1,6 +1,6 @@
 {
-  "id": "response-0",
-  "response_id": "response-0",
+  "id": "response-7",
+  "response_id": "response-7",
   "summary": "HTTP 404",
   "request_method": "GET",
   "request_url": "https://example.com/test",
@@ -18,7 +18,7 @@
     "response_headers": [
       {
         "name": "date",
-        "value": "Sun, 19 Apr 2026 06:07:49 GMT"
+        "value": "Sun, 19 Apr 2026 06:02:59 GMT"
       },
       {
         "name": "content-type",
@@ -38,7 +38,7 @@
       },
       {
         "name": "age",
-        "value": "6940"
+        "value": "6651"
       },
       {
         "name": "cf-cache-status",
@@ -46,7 +46,7 @@
       },
       {
         "name": "cf-ray",
-        "value": "9ee9bb2eeade8d33-CPH"
+        "value": "9ee9b41c6cea460d-CPH"
       }
     ]
   }

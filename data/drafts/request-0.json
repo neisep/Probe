@@ -1,15 +1,15 @@
 {
   "id": "request-0",
   "workspace_id": "default",
-  "path": "selected-request",
-  "content": "{\"name\":\"GET https://api.restful-api.dev/objects\",\"folder\":\"selected-request\",\"method\":\"GET\",\"url\":\"https://api.restful-api.dev/objects\",\"query_params\":[],\"headers\":[],\"body\":null}",
+  "path": null,
+  "content": "{\"name\":\"GET https://example.com/test\",\"folder\":\"\",\"method\":\"GET\",\"url\":\"https://example.com/test\",\"query_params\":[],\"auth\":\"None\",\"headers\":[],\"body\":null}",
   "created_at": null,
   "tags": [
     "request",
     "mvp"
   ],
   "request_metadata": {
-    "request_name": "GET https://api.restful-api.dev/objects",
-    "folder_path": "selected-request"
+    "request_name": "GET https://example.com/test",
+    "folder_path": null
   }
 }

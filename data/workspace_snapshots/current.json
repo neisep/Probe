@@ -4,22 +4,19 @@
   "workspace_root": null,
   "created_at": null,
   "open_files": [
-    "History"
+    "Editor"
   ],
   "drafts": [
-    "request-0"
+    "request-0",
+    "request-1"
   ],
   "responses": [
-    "response-0",
-    "response-1",
-    "response-2",
-    "response-3",
-    "response-4"
+    "response-0"
   ],
   "meta": {
-    "request_count": 1,
-    "response_count": 5,
+    "request_count": 2,
+    "response_count": 1,
     "selected_request": 0,
-    "selected_response": 4
+    "selected_response": 0
   }
 }

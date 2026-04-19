@@ -1,11 +1,11 @@
 {
-  "id": "response-3",
-  "response_id": "response-3",
+  "id": "response-6",
+  "response_id": "response-6",
   "summary": "HTTP 200",
   "request_method": "GET",
   "request_url": "https://api.restful-api.dev/objects",
   "content_preview": "[{\"id\":\"1\",\"name\":\"Google Pixel 6 Pro\",\"data\":{\"color\":\"Cloudy White\",\"capacity\":\"128 GB\"}},{\"id\":\"2\",\"name\":\"Apple iPhone 12 Mini, 256GB, Blue\",\"data\":null},{\"id\":\"3\",\"name\":\"Apple iPhone 12 Pro Max\",\"data\":{\"color\":\"Cloudy White\",\"capacity GB\":512}},{\"id\":\"4\",\"name\":\"Apple iPhone 11, 64GB\",\"data\":{\"price\":389.99,\"color\":\"Purple\"}},{\"id\":\"5\",\"name\":\"Samsung Galaxy Z Fold2\",\"data\":{\"price\":689.99,",
-  "content_body": null,
+  "content_body": "[{\"id\":\"1\",\"name\":\"Google Pixel 6 Pro\",\"data\":{\"color\":\"Cloudy White\",\"capacity\":\"128 GB\"}},{\"id\":\"2\",\"name\":\"Apple iPhone 12 Mini, 256GB, Blue\",\"data\":null},{\"id\":\"3\",\"name\":\"Apple iPhone 12 Pro Max\",\"data\":{\"color\":\"Cloudy White\",\"capacity GB\":512}},{\"id\":\"4\",\"name\":\"Apple iPhone 11, 64GB\",\"data\":{\"price\":389.99,\"color\":\"Purple\"}},{\"id\":\"5\",\"name\":\"Samsung Galaxy Z Fold2\",\"data\":{\"price\":689.99,\"color\":\"Brown\"}},{\"id\":\"6\",\"name\":\"Apple AirPods\",\"data\":{\"generation\":\"3rd\",\"price\":120}},{\"id\":\"7\",\"name\":\"Apple MacBook Pro 16\",\"data\":{\"year\":2019,\"price\":1849.99,\"CPU model\":\"Intel Core i9\",\"Hard disk size\":\"1 TB\"}},{\"id\":\"8\",\"name\":\"Apple Watch Series 8\",\"data\":{\"Strap Colour\":\"Elderberry\",\"Case Size\":\"41mm\"}},{\"id\":\"9\",\"name\":\"Beats Studio3 Wireless\",\"data\":{\"Color\":\"Red\",\"Description\":\"High-performance wireless noise cancelling headphones\"}},{\"id\":\"10\",\"name\":\"Apple iPad Mini 5th Gen\",\"data\":{\"Capacity\":\"64 GB\",\"Screen size\":7.9}},{\"id\":\"11\",\"name\":\"Apple iPad Mini 5th Gen\",\"data\":{\"Capacity\":\"254 GB\",\"Screen size\":7.9}},{\"id\":\"12\",\"name\":\"Apple iPad Air\",\"data\":{\"Generation\":\"4th\",\"Price\":\"419.99\",\"Capacity\":\"64 GB\"}},{\"id\":\"13\",\"name\":\"Apple iPad Air\",\"data\":{\"Generation\":\"4th\",\"Price\":\"519.99\",\"Capacity\":\"256 GB\"}}]",
   "content_type": "application/json;charset=UTF-8",
   "header_count": 19,
   "size_bytes": 1239,
@@ -18,7 +18,7 @@
     "response_headers": [
       {
         "name": "date",
-        "value": "Sat, 18 Apr 2026 20:12:56 GMT"
+        "value": "Sun, 19 Apr 2026 05:55:10 GMT"
       },
       {
         "name": "content-type",
@@ -82,11 +82,11 @@
       },
       {
         "name": "report-to",
-        "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=WWbP9XqD7N6CfhttRJepQLoAGaSjHCCdzmHDDaZi%2BDy6CalkhzzsjqTqwyYJrAtU0Alh4emR1F%2Bcn5ssRew8X5ePnFfh%2Bq62H6AHahTNjztUh3yE9yzSg2ISGhd%2F6NXfG7aqFZG0\"}]}"
+        "value": "{\"group\":\"cf-nel\",\"max_age\":604800,\"endpoints\":[{\"url\":\"https://a.nel.cloudflare.com/report/v4?s=uUVwOs5u6uWEJdWSKW1WV5%2FaTKCwaWrcVUxhS7%2B8TmuSuFWVw%2BxTD9OV76U%2Fiyf2xgH0KPQK%2F4DT%2FhkOWb3GPCdZ%2FwLQ8t848eY5SHsKY3rtzk1vAaj6gDsXveRLcXx39NHk7Pvw\"}]}"
       },
       {
         "name": "cf-ray",
-        "value": "9ee653c61c49a6df-CPH"
+        "value": "9ee9a8a5d88acd9c-CPH"
       },
       {
         "name": "alt-svc",

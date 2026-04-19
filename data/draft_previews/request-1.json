@@ -1,0 +1,17 @@
+{
+  "id": "request-1",
+  "draft_id": "request-1",
+  "method": "GET",
+  "target_url": "https://example.com",
+  "preview_title": "GET https://example.com",
+  "preview_snippet": null,
+  "workspace_id": "default",
+  "request_metadata": {
+    "request_name": "GET https://example.com",
+    "folder_path": null
+  },
+  "tags": [
+    "request"
+  ],
+  "created_at": null
+}

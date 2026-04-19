@@ -1,13 +1,14 @@
 {
   "id": "last",
   "data": {
+    "auth": "None",
     "body": null,
-    "folder": "selected-request",
+    "folder": "",
     "headers": [],
     "method": "GET",
-    "name": "GET https://api.restful-api.dev/objects",
+    "name": "GET https://example.com/test",
     "query_params": [],
     "selected_request": 0,
-    "url": "https://api.restful-api.dev/objects"
+    "url": "https://example.com/test"
   }
 }

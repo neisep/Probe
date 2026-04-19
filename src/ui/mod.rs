@@ -1,9 +1,9 @@
 pub mod center_panel;
-pub mod inspector;
 pub mod left_sidebar;
 pub mod request_panel;
 pub mod request_preview_modal;
 pub mod response_panel;
+pub mod response_viewer;
 pub mod shell;
-pub mod status_bar;
+pub mod theme;
 pub mod top_bar;

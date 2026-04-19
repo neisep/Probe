@@ -1,8 +1,8 @@
 {
-  "selected_response": "response-4",
+  "selected_response": "response-0",
   "selected_request": "request-0",
   "active_environment": "env-0",
-  "active_view": "History",
+  "active_view": "Editor",
   "open_panels": [
     "sidebar",
     "inspector",
