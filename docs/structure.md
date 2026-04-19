@@ -10,6 +10,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - `src/app.rs`
   - Main integration seam.
   - Owns app startup, restore/save, runtime polling, send actions, and projection of runtime results into UI state.
+  - Owns workspace import/export dialog actions and bundle serialization.
   - Resolves active-environment `{{var}}` placeholders before sending requests.
   - Normalizes request organization metadata before persistence restore/save.
   - Builds final outbound URLs from the base URL plus saved query parameters.
@@ -88,6 +89,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - Nested request folders with lightweight collection-style organization.
 - Structured query parameter editing with safe URL composition on send.
 - Structured auth presets for bearer, basic, and API-key flows.
+- Native JSON workspace import/export.
 - Async send flow with response history.
 - Response detail inspection with request/response headers.
 - Lightweight environments with active-environment selection.
@@ -104,5 +106,4 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 
 ## Expected next major areas
 
-- Import/export.
 - Final MVP polish.
