@@ -8,7 +8,7 @@ pub use app_state::AppState;
 pub use environment::Environment;
 pub use request::RequestDraft;
 pub use response::ResponseSummary;
-pub use ui_state::{UIState, View};
+pub use ui_state::{RequestTab, UIState, View};
 
 use std::fmt;
 

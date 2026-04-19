@@ -1,9 +1,36 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RequestUiAction {
+    PreviewRequest(usize),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum View {
     Editor,
     History,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RequestTab {
+    #[default]
+    Params,
+    Auth,
+    Headers,
+    Body,
+}
+
+impl RequestTab {
+    pub const ALL: [Self; 4] = [Self::Params, Self::Auth, Self::Headers, Self::Body];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Params => "Params",
+            Self::Auth => "Auth",
+            Self::Headers => "Headers",
+            Self::Body => "Body",
+        }
+    }
 }
 
 impl View {
@@ -34,8 +61,14 @@ pub struct UIState {
     pub selected_request: Option<usize>,
     pub selected_response: Option<usize>,
     pub view: View,
+    #[serde(default)]
+    pub request_tab: RequestTab,
     #[serde(skip)]
     pub request_search_query: String,
+    #[serde(skip)]
+    pub settings_open: bool,
+    #[serde(skip)]
+    pending_request_action: Option<RequestUiAction>,
 }
 
 impl UIState {
@@ -61,5 +94,13 @@ impl UIState {
 
     pub fn clear_request_search(&mut self) {
         self.request_search_query.clear();
+    }
+
+    pub fn queue_preview_request(&mut self, request_index: usize) {
+        self.pending_request_action = Some(RequestUiAction::PreviewRequest(request_index));
+    }
+
+    pub fn take_pending_request_action(&mut self) -> Option<RequestUiAction> {
+        self.pending_request_action.take()
     }
 }

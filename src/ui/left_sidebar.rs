@@ -2,6 +2,7 @@
 pub mod environment_editor;
 
 use crate::state::{AppState, RequestDraft, View, request::normalize_folder_path};
+use crate::ui::theme;
 use eframe::egui;
 use std::collections::BTreeMap;
 
@@ -12,16 +13,6 @@ fn compact_text(text: &str, max: usize) -> String {
         compact.push_str("...");
     }
     compact
-}
-
-fn method_color(method: &str) -> egui::Color32 {
-    match method {
-        "GET" => egui::Color32::from_rgb(88, 165, 77),
-        "POST" => egui::Color32::from_rgb(66, 133, 244),
-        "PUT" => egui::Color32::from_rgb(244, 180, 0),
-        "DELETE" => egui::Color32::from_rgb(219, 68, 55),
-        _ => egui::Color32::LIGHT_GRAY,
-    }
 }
 
 fn request_label(req: &crate::state::RequestDraft) -> String {
@@ -116,21 +107,19 @@ fn show_request_row(
     let is_selected = selected_index == Some(index);
     let display_name = compact_text(&request_label(req), 40);
     let method = req.method.clone();
+    let mut select_request = false;
 
     ui.horizontal(|ui| {
-        ui.label(
-            egui::RichText::new(format!(" {} ", method))
-                .monospace()
-                .strong()
-                .color(method_color(&method))
-                .background_color(egui::Color32::from_black_alpha(12)),
-        );
-
+        ui.label(theme::method_badge(&method));
         if ui.selectable_label(is_selected, display_name).clicked() {
-            state.ui.select_request(index);
-            state.ui.set_view(View::Editor);
+            select_request = true;
         }
     });
+
+    if select_request {
+        state.ui.select_request(index);
+        state.ui.set_view(View::Editor);
+    }
 }
 
 fn show_folder_node(
@@ -296,36 +285,6 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
                 });
             }
 
-            ui.add_space(8.0);
-            ui.separator();
-            environment_editor::show_sidebar_section(ui, state);
-            ui.add_space(8.0);
-            ui.separator();
-            ui.heading("Summary");
-            ui.label(format!("Requests: {}", state.requests.len()));
-            ui.label(format!("Responses: {}", state.responses.len()));
-            if let Some(index) = selected_index {
-                ui.label(format!("Selected index: {}", index));
-            } else {
-                ui.label("Selected index: -");
-            }
-            ui.add_space(8.0);
-
-            ui.heading("Views");
-            ui.separator();
-            for v in [View::Editor, View::History] {
-                let is_selected = state.ui.view == v;
-                if ui.selectable_label(is_selected, v.label()).clicked() {
-                    state.ui.set_view(v);
-                }
-            }
-
-            ui.add_space(10.0);
-            ui.heading("Shortcuts");
-            ui.separator();
-            ui.label("• New/Dup/Del: sidebar buttons");
-            ui.label("• Search: sidebar filter box");
-            ui.label("• Send: Use bottom 'Send selected request' button");
         });
 }
 
