@@ -1,6 +1,10 @@
 use base64::Engine;
 use eframe::egui;
-use std::{fs, time::Duration};
+use std::{
+    fs,
+    path::PathBuf,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use crate::persistence::FileStorage;
 use crate::persistence::Snapshot;
@@ -14,7 +18,7 @@ use crate::state::request::{
     ApiKeyLocation, RequestAuth, normalize_folder_path, normalize_request_name,
 };
 use crate::state::{AppState, View};
-use crate::ui::shell;
+use crate::ui::{request_preview_modal, shell};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -63,6 +67,27 @@ struct PendingRequestContext {
     headers: Vec<(String, String)>,
 }
 
+#[derive(Debug, Clone)]
+struct WorkspaceImportPreview {
+    request_count: usize,
+    response_count: usize,
+    environment_count: usize,
+    selected_request_label: Option<String>,
+}
+
+struct PendingWorkspaceImport {
+    path: PathBuf,
+    preview: WorkspaceImportPreview,
+    imported_state: AppState,
+}
+
+#[derive(Debug, Clone)]
+struct PendingRequestPreview {
+    preview: request_preview_modal::RequestPreviewData,
+    prepared_request: Option<AsyncRequest>,
+    pending_request_context: Option<PendingRequestContext>,
+}
+
 pub struct ProbeApp {
     status: String,
     state: AppState,
@@ -70,6 +95,8 @@ pub struct ProbeApp {
     storage: Option<FileStorage>,
     pending_request: Option<u64>,
     pending_request_context: Option<PendingRequestContext>,
+    pending_workspace_import: Option<PendingWorkspaceImport>,
+    pending_request_preview: Option<PendingRequestPreview>,
 }
 
 impl ProbeApp {
@@ -90,6 +117,8 @@ impl ProbeApp {
                     storage,
                     pending_request: None,
                     pending_request_context: None,
+                    pending_workspace_import: None,
+                    pending_request_preview: None,
                 }
             }
             (Err(error), Ok(state)) => Self {
@@ -99,6 +128,8 @@ impl ProbeApp {
                 storage,
                 pending_request: None,
                 pending_request_context: None,
+                pending_workspace_import: None,
+                pending_request_preview: None,
             },
             (Ok(runtime), Err(error)) => Self {
                 status: format!("State bootstrap fallback: {error}"),
@@ -107,6 +138,8 @@ impl ProbeApp {
                 storage,
                 pending_request: None,
                 pending_request_context: None,
+                pending_workspace_import: None,
+                pending_request_preview: None,
             },
             (Err(runtime_error), Err(state_error)) => Self {
                 status: format!("Startup fallback: runtime={runtime_error}; state={state_error}"),
@@ -115,6 +148,8 @@ impl ProbeApp {
                 storage,
                 pending_request: None,
                 pending_request_context: None,
+                pending_workspace_import: None,
+                pending_request_preview: None,
             },
         }
     }
@@ -141,7 +176,13 @@ impl ProbeApp {
             return;
         }
 
-        self.status = format!("Workspace exported to {}", path.display());
+        self.status = format!(
+            "Exported {} requests, {} responses, {} environments to {}",
+            self.state.requests.len(),
+            self.state.responses.len(),
+            self.state.environments.len(),
+            path.display()
+        );
     }
 
     fn import_workspace(&mut self) {
@@ -160,7 +201,7 @@ impl ProbeApp {
         let contents = match fs::read_to_string(&path) {
             Ok(contents) => contents,
             Err(error) => {
-                self.status = format!("Import failed: {error}");
+                self.status = format!("Import failed reading {}: {error}", path.display());
                 return;
             }
         };
@@ -173,11 +214,213 @@ impl ProbeApp {
             }
         };
 
-        self.state = imported_state;
+        let preview = preview_workspace_import(&imported_state);
+        self.pending_workspace_import = Some(PendingWorkspaceImport {
+            path: path.clone(),
+            preview: preview.clone(),
+            imported_state,
+        });
+        self.status = format!(
+            "Review import from {} ({} requests, {} responses, {} environments)",
+            path.display(),
+            preview.request_count,
+            preview.response_count,
+            preview.environment_count
+        );
+    }
+
+    fn confirm_workspace_import(&mut self) {
+        let Some(pending_import) = self.pending_workspace_import.take() else {
+            return;
+        };
+
+        let backup_path = match backup_workspace(&self.state) {
+            Ok(path) => path,
+            Err(error) => {
+                self.pending_workspace_import = Some(pending_import);
+                self.status = format!("Import failed before applying: {error}");
+                return;
+            }
+        };
+
+        let preview = pending_import.preview.clone();
+        self.state = pending_import.imported_state;
         self.pending_request = None;
         self.pending_request_context = None;
         self.save_snapshot();
-        self.status = format!("Workspace imported from {}", path.display());
+
+        if self.status.starts_with("Save failed") {
+            self.status = format!(
+                "Import applied but persistence failed. Backup saved to {}",
+                backup_path.display()
+            );
+            return;
+        }
+
+        self.status = format!(
+            "Imported {} requests, {} responses, {} environments from {}. Backup saved to {}",
+            preview.request_count,
+            preview.response_count,
+            preview.environment_count,
+            pending_import.path.display(),
+            backup_path.display()
+        );
+    }
+
+    fn show_import_confirmation(&mut self, ctx: &egui::Context) {
+        if self.pending_workspace_import.is_none() {
+            return;
+        }
+
+        let mut confirm_import = false;
+        let mut cancel_import = false;
+        let preview = self
+            .pending_workspace_import
+            .as_ref()
+            .map(|pending_import| pending_import.preview.clone())
+            .expect("preview exists when pending import exists");
+        let import_path = self
+            .pending_workspace_import
+            .as_ref()
+            .map(|pending_import| pending_import.path.clone())
+            .expect("path exists when pending import exists");
+
+        egui::Window::new("Confirm workspace import")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!(
+                    "Replace the current workspace with {}?",
+                    import_path.display()
+                ));
+                ui.add_space(6.0);
+                ui.label(format!("Requests: {}", preview.request_count));
+                ui.label(format!("Responses: {}", preview.response_count));
+                ui.label(format!("Environments: {}", preview.environment_count));
+                if let Some(label) = preview.selected_request_label.as_deref() {
+                    ui.label(format!("Selected request: {label}"));
+                }
+                ui.add_space(6.0);
+                ui.small(
+                    "Probe will create an automatic backup of the current workspace before applying the import.",
+                );
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Import and replace").clicked() {
+                        confirm_import = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel_import = true;
+                    }
+                });
+            });
+
+        if cancel_import {
+            self.pending_workspace_import = None;
+            self.status = "Import cancelled".to_owned();
+        }
+
+        if confirm_import {
+            self.confirm_workspace_import();
+        }
+    }
+
+    fn preview_selected_request(&mut self) {
+        if self.pending_request.is_some() {
+            self.status = "Wait for the current request to finish".to_owned();
+            return;
+        }
+
+        let Some(request) = self.state.selected_request().cloned() else {
+            self.status = "No request selected".to_owned();
+            return;
+        };
+        let Some(_runtime) = &self.runtime else {
+            self.status = "Runtime unavailable".to_owned();
+            return;
+        };
+        let Some(selected_request_index) = self.state.selected_request_index() else {
+            self.status = "No request selected".to_owned();
+            return;
+        };
+
+        let resolution_values = active_resolution_values(&self.state);
+        match prepare_request_draft(&request, &resolution_values) {
+            Ok(prepared_request) => {
+                let pending_request_context = PendingRequestContext {
+                    request_id: AppState::request_id_for_index(selected_request_index),
+                    method: prepared_request.method.clone(),
+                    url: prepared_request.url.clone(),
+                    headers: prepared_request.headers.clone(),
+                };
+                self.pending_request_preview = Some(PendingRequestPreview {
+                    preview: build_request_preview_from_prepared_request(
+                        &request,
+                        &prepared_request,
+                    ),
+                    prepared_request: Some(prepared_request),
+                    pending_request_context: Some(pending_request_context),
+                });
+                self.status = "Review the request preview before sending".to_owned();
+            }
+            Err(error) => {
+                let error_info = error.to_error_info();
+                self.pending_request_preview = Some(PendingRequestPreview {
+                    preview: build_request_preview_from_error(&request, &error),
+                    prepared_request: None,
+                    pending_request_context: None,
+                });
+                self.status = format_error(&error_info);
+            }
+        }
+    }
+
+    fn submit_previewed_request(&mut self) {
+        let Some(runtime) = &self.runtime else {
+            self.status = "Runtime unavailable".to_owned();
+            return;
+        };
+        let Some(pending_preview) = self.pending_request_preview.clone() else {
+            return;
+        };
+        let Some(prepared_request) = pending_preview.prepared_request.clone() else {
+            self.status = "Fix the request preview issues before sending".to_owned();
+            return;
+        };
+        let Some(pending_request_context) = pending_preview.pending_request_context.clone() else {
+            self.status = "Preview is missing request context".to_owned();
+            return;
+        };
+
+        match runtime.submit_blocking(prepared_request) {
+            Ok(id) => {
+                self.pending_request = Some(id);
+                self.pending_request_context = Some(pending_request_context);
+                self.pending_request_preview = None;
+                self.status = format!("Submitted request {id}");
+                self.save_snapshot();
+            }
+            Err(error) => {
+                self.status = format!("Submit error: {error}");
+            }
+        }
+    }
+
+    fn show_request_preview(&mut self, ctx: &egui::Context) {
+        let Some(pending_preview) = self.pending_request_preview.as_ref() else {
+            return;
+        };
+
+        match request_preview_modal::show_request_preview(ctx, &pending_preview.preview) {
+            request_preview_modal::RequestPreviewAction::None => {}
+            request_preview_modal::RequestPreviewAction::Close => {
+                self.pending_request_preview = None;
+            }
+            request_preview_modal::RequestPreviewAction::Send => {
+                self.submit_previewed_request();
+            }
+        }
     }
 
     fn save_snapshot(&mut self) {
@@ -508,7 +751,9 @@ impl eframe::App for ProbeApp {
 
                 if ui
                     .add_enabled(
-                        self.pending_request.is_none(),
+                        self.pending_request.is_none()
+                            && self.pending_workspace_import.is_none()
+                            && self.pending_request_preview.is_none(),
                         egui::Button::new("Import workspace"),
                     )
                     .clicked()
@@ -516,48 +761,16 @@ impl eframe::App for ProbeApp {
                     self.import_workspace();
                 }
 
-                if ui.button("Send selected request").clicked() {
-                    if let Some(req) = self.state.selected_request().cloned() {
-                        let Some(runtime) = &self.runtime else {
-                            self.status = "Runtime unavailable".to_owned();
-                            return;
-                        };
-                        let Some(selected_request_index) = self.state.selected_request_index()
-                        else {
-                            self.status = "No request selected".to_owned();
-                            return;
-                        };
-                        let resolution_values = active_resolution_values(&self.state);
-                        let prepared_request = match prepare_request_draft(&req, &resolution_values)
-                        {
-                            Ok(prepared_request) => prepared_request,
-                            Err(error) => {
-                                let error_info = error.to_error_info();
-                                self.status = format_error(&error_info);
-                                return;
-                            }
-                        };
-                        let pending_request_context = PendingRequestContext {
-                            request_id: AppState::request_id_for_index(selected_request_index),
-                            method: prepared_request.method.clone(),
-                            url: prepared_request.url.clone(),
-                            headers: prepared_request.headers.clone(),
-                        };
-
-                        match runtime.submit_blocking(prepared_request) {
-                            Ok(id) => {
-                                self.pending_request = Some(id);
-                                self.pending_request_context = Some(pending_request_context);
-                                self.status = format!("Submitted request {id}");
-                                self.save_snapshot();
-                            }
-                            Err(e) => {
-                                self.status = format!("Submit error: {}", e);
-                            }
-                        }
-                    } else {
-                        self.status = "No request selected".to_string();
-                    }
+                if ui
+                    .add_enabled(
+                        self.pending_request.is_none()
+                            && self.pending_workspace_import.is_none()
+                            && self.pending_request_preview.is_none(),
+                        egui::Button::new("Send selected request"),
+                    )
+                    .clicked()
+                {
+                    self.preview_selected_request();
                 }
 
                 if ui.button("Clear responses").clicked() {
@@ -568,6 +781,8 @@ impl eframe::App for ProbeApp {
             });
         });
 
+        self.show_import_confirmation(ui.ctx());
+        self.show_request_preview(ui.ctx());
         shell::show(ui, &mut self.state, &self.status);
     }
 }
@@ -913,12 +1128,133 @@ fn active_resolution_values(state: &AppState) -> ResolutionValues {
     state.active_variables().cloned().unwrap_or_default()
 }
 
+fn build_request_preview_from_prepared_request(
+    request: &crate::state::RequestDraft,
+    prepared_request: &AsyncRequest,
+) -> request_preview_modal::RequestPreviewData {
+    request_preview_modal::RequestPreviewData {
+        request_name: preview_request_name(
+            request,
+            &prepared_request.method,
+            &prepared_request.url,
+        ),
+        method: prepared_request.method.clone(),
+        url: prepared_request.url.clone(),
+        query_params: preview_query_params(&prepared_request.url),
+        headers: prepared_request.headers.clone(),
+        body: preview_body_from_bytes(prepared_request.body.as_deref()),
+        issue: None,
+        can_send: true,
+    }
+}
+
+fn build_request_preview_from_error(
+    request: &crate::state::RequestDraft,
+    error: &ResolutionError,
+) -> request_preview_modal::RequestPreviewData {
+    request_preview_modal::RequestPreviewData {
+        request_name: preview_request_name(request, &request.method, &request.url),
+        method: request.method.clone(),
+        url: request.url.clone(),
+        query_params: request.query_params.clone(),
+        headers: request.headers.clone(),
+        body: preview_body_from_text(request.body.as_deref()),
+        issue: Some(request_preview_modal::RequestPreviewIssue {
+            summary: error.to_string(),
+            target: error.target.clone(),
+            placeholder: error.placeholder.clone(),
+            details: error.details.clone(),
+        }),
+        can_send: false,
+    }
+}
+
+fn preview_request_name(
+    request: &crate::state::RequestDraft,
+    fallback_method: &str,
+    fallback_url: &str,
+) -> String {
+    let fallback = format!("{} {}", fallback_method.trim(), fallback_url.trim())
+        .trim()
+        .to_owned();
+    normalize_request_name(&request.name).unwrap_or_else(|| {
+        if fallback.is_empty() {
+            "Request preview".to_owned()
+        } else {
+            fallback
+        }
+    })
+}
+
+fn preview_query_params(url: &str) -> Vec<(String, String)> {
+    reqwest::Url::parse(url)
+        .ok()
+        .map(|url| {
+            url.query_pairs()
+                .map(|(name, value)| (name.into_owned(), value.into_owned()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn preview_body_from_bytes(body: Option<&[u8]>) -> request_preview_modal::RequestPreviewBody {
+    match body {
+        None => request_preview_modal::RequestPreviewBody::Empty,
+        Some(body) if body.is_empty() => request_preview_modal::RequestPreviewBody::Empty,
+        Some(body) => match std::str::from_utf8(body) {
+            Ok(text) => request_preview_modal::RequestPreviewBody::Text(text.to_owned()),
+            Err(_) => request_preview_modal::RequestPreviewBody::Binary {
+                size_bytes: body.len(),
+            },
+        },
+    }
+}
+
+fn preview_body_from_text(body: Option<&str>) -> request_preview_modal::RequestPreviewBody {
+    match body {
+        None => request_preview_modal::RequestPreviewBody::Empty,
+        Some(body) if body.is_empty() => request_preview_modal::RequestPreviewBody::Empty,
+        Some(body) => request_preview_modal::RequestPreviewBody::Text(body.to_owned()),
+    }
+}
+
+fn preview_workspace_import(state: &AppState) -> WorkspaceImportPreview {
+    WorkspaceImportPreview {
+        request_count: state.requests.len(),
+        response_count: state.responses.len(),
+        environment_count: state.environments.len(),
+        selected_request_label: state
+            .selected_request()
+            .map(|request| request.display_name()),
+    }
+}
+
+fn backup_workspace(state: &AppState) -> Result<PathBuf, String> {
+    let json = workspace_bundle_to_json(state)?;
+    let backup_dir = PathBuf::from("./data/backups");
+    fs::create_dir_all(&backup_dir).map_err(|error| {
+        format!(
+            "could not create backup directory {}: {error}",
+            backup_dir.display()
+        )
+    })?;
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| format!("could not compute backup timestamp: {error}"))?
+        .as_millis();
+    let backup_path = backup_dir.join(format!("pre-import-{timestamp}.probe.json"));
+    fs::write(&backup_path, json)
+        .map_err(|error| format!("could not write backup {}: {error}", backup_path.display()))?;
+    Ok(backup_path)
+}
+
 fn workspace_bundle_to_json(state: &AppState) -> Result<String, String> {
     serde_json::to_string_pretty(&build_workspace_bundle(state)).map_err(|error| error.to_string())
 }
 
 fn workspace_bundle_from_json(json: &str) -> Result<AppState, String> {
-    let bundle: WorkspaceBundle = serde_json::from_str(json).map_err(|error| error.to_string())?;
+    let bundle: WorkspaceBundle = serde_json::from_str(json)
+        .map_err(|error| format!("invalid workspace bundle JSON: {error}"))?;
     state_from_workspace_bundle(bundle)
 }
 
@@ -936,8 +1272,8 @@ fn build_workspace_bundle(state: &AppState) -> WorkspaceBundle {
 fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, String> {
     if bundle.format_version != WORKSPACE_BUNDLE_FORMAT_VERSION {
         return Err(format!(
-            "unsupported workspace format version {}",
-            bundle.format_version
+            "unsupported workspace format version {} (expected {})",
+            bundle.format_version, WORKSPACE_BUNDLE_FORMAT_VERSION
         ));
     }
 
@@ -956,14 +1292,15 @@ fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, Stri
 }
 
 fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
-    for request in &mut state.requests {
+    for (index, request) in state.requests.iter_mut().enumerate() {
+        let request_label = describe_imported_request(index, request);
         let method = request.method.trim().to_uppercase();
         if method.is_empty() {
-            return Err("imported request method cannot be empty".to_owned());
+            return Err(format!("{request_label} has an empty method"));
         }
         let url = request.url.trim().to_owned();
         if url.is_empty() {
-            return Err("imported request url cannot be empty".to_owned());
+            return Err(format!("{request_label} has an empty URL"));
         }
 
         let name = request.name.clone();
@@ -975,10 +1312,13 @@ fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
     }
 
     let mut environment_names = std::collections::BTreeSet::new();
-    for environment in &mut state.environments {
+    for (index, environment) in state.environments.iter_mut().enumerate() {
         let name = environment.name.trim().to_owned();
         if name.is_empty() {
-            return Err("imported environment name cannot be empty".to_owned());
+            return Err(format!(
+                "imported environment {} has an empty name",
+                index + 1
+            ));
         }
         if !environment_names.insert(name.clone()) {
             return Err(format!("duplicate imported environment '{name}'"));
@@ -987,6 +1327,24 @@ fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
     }
 
     Ok(())
+}
+
+fn describe_imported_request(index: usize, request: &crate::state::RequestDraft) -> String {
+    if let Some(name) = normalize_request_name(&request.name) {
+        return format!("Imported request {} ('{}')", index + 1, name);
+    }
+
+    let method = request.method.trim();
+    let url = request.url.trim();
+    if !method.is_empty() || !url.is_empty() {
+        return format!(
+            "Imported request {} ('{}')",
+            index + 1,
+            format!("{method} {url}").trim()
+        );
+    }
+
+    format!("Imported request {}", index + 1)
 }
 
 fn hydrate_response_request_metadata(state: &mut AppState) {
@@ -1302,11 +1660,14 @@ fn create_storage() -> Option<FileStorage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        PersistedRequestDraft, build_request_url, prepare_request_draft,
+        PersistedRequestDraft, build_request_preview_from_error,
+        build_request_preview_from_prepared_request, build_request_url, prepare_request_draft,
         workspace_bundle_from_json, workspace_bundle_to_json,
     };
+    use crate::runtime::{AsyncRequest, ResolutionError, ResolutionErrorKind};
     use crate::state::request::{ApiKeyLocation, RequestAuth};
     use crate::state::{Environment, RequestDraft, View};
+    use crate::ui::request_preview_modal::RequestPreviewBody;
     use std::collections::BTreeMap;
 
     #[test]
@@ -1494,5 +1855,89 @@ mod tests {
             .expect_err("unsupported workspace bundle version should fail");
 
         assert!(error.contains("unsupported workspace format version"));
+    }
+
+    #[test]
+    fn request_preview_from_prepared_request_uses_resolved_values() {
+        let mut request = RequestDraft::default_request();
+        request.set_request_name("Create widget");
+        let prepared_request = AsyncRequest {
+            method: "POST".to_owned(),
+            url: "https://example.com/items?page=1&search=hello%20world".to_owned(),
+            headers: vec![("Authorization".to_owned(), "Bearer secret".to_owned())],
+            body: Some(br#"{"ok":true}"#.to_vec()),
+        };
+
+        let preview = build_request_preview_from_prepared_request(&request, &prepared_request);
+
+        assert_eq!(preview.request_name, "Create widget");
+        assert_eq!(preview.query_params.len(), 2);
+        assert!(preview.can_send);
+        assert!(preview.issue.is_none());
+        match preview.body {
+            RequestPreviewBody::Text(body) => assert_eq!(body, r#"{"ok":true}"#),
+            RequestPreviewBody::Empty | RequestPreviewBody::Binary { .. } => {
+                panic!("prepared preview should keep the text body")
+            }
+        }
+    }
+
+    #[test]
+    fn request_preview_from_error_captures_issue_context() {
+        let mut request = RequestDraft::default_request();
+        request.set_request_name("Broken request");
+        request.set_url("https://example.com/{{missing}}");
+        request.query_params = vec![("search".to_owned(), "{{missing}}".to_owned())];
+        request.body = Some("{{missing}}".to_owned());
+        let error = ResolutionError {
+            kind: ResolutionErrorKind::MissingValue,
+            target: "url".to_owned(),
+            placeholder: Some("missing".to_owned()),
+            details: None,
+        };
+
+        let preview = build_request_preview_from_error(&request, &error);
+
+        assert_eq!(preview.request_name, "Broken request");
+        assert!(!preview.can_send);
+        assert_eq!(preview.query_params, request.query_params);
+        match preview.body {
+            RequestPreviewBody::Text(body) => assert_eq!(body, "{{missing}}"),
+            RequestPreviewBody::Empty | RequestPreviewBody::Binary { .. } => {
+                panic!("error preview should show the editable request body")
+            }
+        }
+        let issue = preview
+            .issue
+            .expect("preview should include the blocking issue");
+        assert_eq!(issue.target, "url");
+        assert_eq!(issue.placeholder.as_deref(), Some("missing"));
+        assert!(issue.summary.contains("unresolved placeholder"));
+    }
+
+    #[test]
+    fn workspace_bundle_reports_request_context_for_invalid_requests() {
+        let json = r#"{
+            "format_version":1,
+            "requests":[{"name":"Broken request","folder":"","method":"","url":"https://example.com","query_params":[],"auth":"None","headers":[],"body":null}],
+            "responses":[],
+            "environments":[],
+            "active_environment":null,
+            "ui":{"selected_request":null,"selected_response":null,"view":"Editor"}
+        }"#;
+
+        let error =
+            workspace_bundle_from_json(json).expect_err("invalid request should be rejected");
+
+        assert!(error.contains("Broken request"));
+        assert!(error.contains("empty method"));
+    }
+
+    #[test]
+    fn workspace_bundle_reports_invalid_json_context() {
+        let error =
+            workspace_bundle_from_json("{").expect_err("invalid workspace json should fail");
+
+        assert!(error.contains("invalid workspace bundle JSON"));
     }
 }
