@@ -1,4 +1,92 @@
 use crate::state::StateError;
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RequestAuthKind {
+    #[default]
+    None,
+    Bearer,
+    Basic,
+    ApiKey,
+}
+
+impl RequestAuthKind {
+    pub const ALL: [Self; 4] = [Self::None, Self::Bearer, Self::Basic, Self::ApiKey];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::Bearer => "Bearer token",
+            Self::Basic => "Basic auth",
+            Self::ApiKey => "API key",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ApiKeyLocation {
+    #[default]
+    Header,
+    Query,
+}
+
+impl ApiKeyLocation {
+    pub const ALL: [Self; 2] = [Self::Header, Self::Query];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Header => "Header",
+            Self::Query => "Query param",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum RequestAuth {
+    #[default]
+    None,
+    Bearer {
+        token: String,
+    },
+    Basic {
+        username: String,
+        password: String,
+    },
+    ApiKey {
+        location: ApiKeyLocation,
+        name: String,
+        value: String,
+    },
+}
+
+impl RequestAuth {
+    pub fn kind(&self) -> RequestAuthKind {
+        match self {
+            Self::None => RequestAuthKind::None,
+            Self::Bearer { .. } => RequestAuthKind::Bearer,
+            Self::Basic { .. } => RequestAuthKind::Basic,
+            Self::ApiKey { .. } => RequestAuthKind::ApiKey,
+        }
+    }
+
+    pub fn from_kind(kind: RequestAuthKind) -> Self {
+        match kind {
+            RequestAuthKind::None => Self::None,
+            RequestAuthKind::Bearer => Self::Bearer {
+                token: String::new(),
+            },
+            RequestAuthKind::Basic => Self::Basic {
+                username: String::new(),
+                password: String::new(),
+            },
+            RequestAuthKind::ApiKey => Self::ApiKey {
+                location: ApiKeyLocation::Header,
+                name: String::new(),
+                value: String::new(),
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct RequestDraft {
@@ -7,6 +95,7 @@ pub struct RequestDraft {
     pub method: String,
     pub url: String,
     pub query_params: Vec<(String, String)>,
+    pub auth: RequestAuth,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
 }
@@ -19,6 +108,7 @@ impl RequestDraft {
             method: "GET".to_owned(),
             url: "https://example.com".to_owned(),
             query_params: Vec::new(),
+            auth: RequestAuth::None,
             headers: Vec::new(),
             body: None,
         }
@@ -41,6 +131,7 @@ impl RequestDraft {
             method: method.to_uppercase(),
             url: url.to_owned(),
             query_params: Vec::new(),
+            auth: RequestAuth::None,
             headers: Vec::new(),
             body: None,
         })
@@ -151,7 +242,7 @@ fn split_url_query(url: &str) -> (String, Vec<(String, String)>) {
 
 #[cfg(test)]
 mod tests {
-    use super::RequestDraft;
+    use super::{ApiKeyLocation, RequestAuth, RequestAuthKind, RequestDraft};
 
     #[test]
     fn default_request_is_editable_and_valid() {
@@ -162,6 +253,7 @@ mod tests {
         assert_eq!(draft.method, "GET");
         assert_eq!(draft.url, "https://example.com");
         assert!(draft.query_params.is_empty());
+        assert_eq!(draft.auth, RequestAuth::None);
         assert!(draft.headers.is_empty());
         assert!(draft.body.is_none());
     }
@@ -174,6 +266,9 @@ mod tests {
             method: "POST".to_owned(),
             url: "https://example.com/items".to_owned(),
             query_params: vec![("page".to_owned(), "1".to_owned())],
+            auth: RequestAuth::Bearer {
+                token: "{{TOKEN}}".to_owned(),
+            },
             headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
             body: Some("{\"ok\":true}".to_owned()),
         };
@@ -185,6 +280,7 @@ mod tests {
         assert_eq!(clone.method, draft.method);
         assert_eq!(clone.url, draft.url);
         assert_eq!(clone.query_params, draft.query_params);
+        assert_eq!(clone.auth, draft.auth);
         assert_eq!(clone.headers, draft.headers);
         assert_eq!(clone.body, draft.body);
     }
@@ -235,6 +331,30 @@ mod tests {
                 ("limit".to_owned(), "10".to_owned()),
                 ("offset".to_owned(), "20".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn auth_kind_round_trip_builds_expected_variants() {
+        assert_eq!(
+            RequestAuth::from_kind(RequestAuthKind::None),
+            RequestAuth::None
+        );
+        assert_eq!(
+            RequestAuth::from_kind(RequestAuthKind::Bearer).kind(),
+            RequestAuthKind::Bearer
+        );
+        assert_eq!(
+            RequestAuth::from_kind(RequestAuthKind::Basic).kind(),
+            RequestAuthKind::Basic
+        );
+        assert_eq!(
+            RequestAuth::from_kind(RequestAuthKind::ApiKey),
+            RequestAuth::ApiKey {
+                location: ApiKeyLocation::Header,
+                name: String::new(),
+                value: String::new(),
+            }
         );
     }
 }
