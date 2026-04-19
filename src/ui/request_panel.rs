@@ -122,10 +122,18 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
                         });
 
                     if let Some(req) = state.selected_request_mut() {
-                        ui.add(
+                        let url_response = ui.add(
                             egui::TextEdit::singleline(&mut req.url)
                                 .hint_text("https://example.com/path"),
                         );
+                        if url_response.lost_focus() {
+                            let url = req.url.clone();
+                            if url.contains('?') {
+                                req.adopt_url_query(&url);
+                            } else {
+                                req.set_url(&url);
+                            }
+                        }
                     } else {
                         let mut dummy = String::new();
                         ui.add_enabled(false, egui::TextEdit::singleline(&mut dummy));
@@ -140,6 +148,67 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
         ui.add_space(6.0);
 
         if let Some(req) = state.selected_request_mut() {
+            ui.collapsing("Query Parameters", |ui| {
+                ui.vertical(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label("Name");
+                        ui.add_space(8.0);
+                        ui.label("Value");
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui.small_button("+ Add").clicked() {
+                                req.query_params.push((String::new(), String::new()));
+                            }
+                        });
+                    });
+
+                    ui.separator();
+
+                    let mut remove_idx: Option<usize> = None;
+                    for i in 0..req.query_params.len() {
+                        let (key, value) = &mut req.query_params[i];
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(key)
+                                    .desired_width(120.0)
+                                    .hint_text("Param name"),
+                            );
+                            ui.add(
+                                egui::TextEdit::singleline(value)
+                                    .desired_width(240.0)
+                                    .hint_text("Param value"),
+                            );
+                            if ui.small_button("✕").clicked() {
+                                remove_idx = Some(i);
+                            }
+                        });
+                    }
+                    if let Some(i) = remove_idx {
+                        if i < req.query_params.len() {
+                            req.query_params.remove(i);
+                        }
+                    }
+
+                    if req.query_params.is_empty() {
+                        ui.monospace("No query parameters. Use + Add to create one.");
+                    } else {
+                        let active_count = req
+                            .query_params
+                            .iter()
+                            .filter(|(key, _value)| !key.trim().is_empty())
+                            .count();
+                        ui.small(format!(
+                            "{active_count} query rows will be applied when sending."
+                        ));
+                    }
+
+                    ui.small(
+                        "Rows with blank names are ignored. Paste a full URL to backfill rows.",
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+
             ui.collapsing("Headers", |ui| {
                 ui.vertical(|ui| {
                     ui.horizontal(|ui| {
