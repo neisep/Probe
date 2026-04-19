@@ -88,7 +88,7 @@ impl RequestAuth {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RequestDraft {
     pub name: String,
     pub folder: String,
