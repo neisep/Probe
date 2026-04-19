@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+base64 = "0.22.1"
 eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json"] }
 serde = { version = "1.0.228", features = ["derive"] }

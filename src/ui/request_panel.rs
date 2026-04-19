@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
 use crate::ui::left_sidebar::environment_editor;
 use eframe::egui;
 
@@ -203,6 +204,110 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
 
                     ui.small(
                         "Rows with blank names are ignored. Paste a full URL to backfill rows.",
+                    );
+                });
+            });
+
+            ui.add_space(6.0);
+
+            ui.collapsing("Authentication", |ui| {
+                ui.vertical(|ui| {
+                    let mut auth_kind = req.auth.kind();
+
+                    ui.horizontal(|ui| {
+                        ui.label("Mode");
+                        egui::ComboBox::from_id_salt("request_auth_mode")
+                            .selected_text(auth_kind.label())
+                            .width(160.0)
+                            .show_ui(ui, |ui| {
+                                for kind in RequestAuthKind::ALL {
+                                    ui.selectable_value(&mut auth_kind, kind, kind.label());
+                                }
+                            });
+                    });
+
+                    if auth_kind != req.auth.kind() {
+                        req.auth = RequestAuth::from_kind(auth_kind);
+                    }
+
+                    match &mut req.auth {
+                        RequestAuth::None => {
+                            ui.monospace("No authentication. Manual headers still work.");
+                        }
+                        RequestAuth::Bearer { token } => {
+                            ui.add(
+                                egui::TextEdit::singleline(token)
+                                    .desired_width(320.0)
+                                    .hint_text("Bearer token or {{API_TOKEN}}"),
+                            );
+                            ui.small("Sends Authorization: Bearer <token>. Supports {{vars}}.");
+                        }
+                        RequestAuth::Basic { username, password } => {
+                            ui.horizontal(|ui| {
+                                ui.add(
+                                    egui::TextEdit::singleline(username)
+                                        .desired_width(140.0)
+                                        .hint_text("Username or {{USER}}"),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(password)
+                                        .desired_width(180.0)
+                                        .hint_text("Password or {{PASS}}")
+                                        .password(true),
+                                );
+                            });
+                            ui.small(
+                                "Sends Authorization: Basic base64(username:password). Supports {{vars}}.",
+                            );
+                        }
+                        RequestAuth::ApiKey {
+                            location,
+                            name,
+                            value,
+                        } => {
+                            ui.horizontal(|ui| {
+                                let mut selected_location = *location;
+                                egui::ComboBox::from_id_salt("request_api_key_location")
+                                    .selected_text(selected_location.label())
+                                    .width(120.0)
+                                    .show_ui(ui, |ui| {
+                                        for candidate in ApiKeyLocation::ALL {
+                                            ui.selectable_value(
+                                                &mut selected_location,
+                                                candidate,
+                                                candidate.label(),
+                                            );
+                                        }
+                                    });
+                                *location = selected_location;
+
+                                ui.add(
+                                    egui::TextEdit::singleline(name)
+                                        .desired_width(140.0)
+                                        .hint_text(match selected_location {
+                                            ApiKeyLocation::Header => "Header name",
+                                            ApiKeyLocation::Query => "Param name",
+                                        }),
+                                );
+                                ui.add(
+                                    egui::TextEdit::singleline(value)
+                                        .desired_width(180.0)
+                                        .hint_text("Value or {{API_KEY}}"),
+                                );
+                            });
+                            ui.small(match location {
+                                ApiKeyLocation::Header => {
+                                    "Injects a header during send. Use a unique name to avoid header conflicts."
+                                }
+                                ApiKeyLocation::Query => {
+                                    "Appends a query parameter during send. Supports {{vars}}."
+                                }
+                            });
+                        }
+                    }
+
+                    ui.small(
+                        "Auth presets are stored with the request draft. Prefer environment placeholders for secrets.",
                     );
                 });
             });
