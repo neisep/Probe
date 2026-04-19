@@ -34,6 +34,8 @@ pub struct UIState {
     pub selected_request: Option<usize>,
     pub selected_response: Option<usize>,
     pub view: View,
+    #[serde(skip)]
+    pub request_search_query: String,
 }
 
 impl UIState {
@@ -51,5 +53,13 @@ impl UIState {
 
     pub fn set_view(&mut self, view: View) {
         self.view = view;
+    }
+
+    pub fn has_request_search(&self) -> bool {
+        !self.request_search_query.trim().is_empty()
+    }
+
+    pub fn clear_request_search(&mut self) {
+        self.request_search_query.clear();
     }
 }

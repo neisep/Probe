@@ -1,7 +1,7 @@
 #[path = "environment_editor.rs"]
 pub mod environment_editor;
 
-use crate::state::{AppState, View, request::normalize_folder_path};
+use crate::state::{AppState, RequestDraft, View, request::normalize_folder_path};
 use eframe::egui;
 use std::collections::BTreeMap;
 
@@ -71,10 +71,32 @@ impl FolderTreeNode {
     }
 }
 
-fn build_folder_tree(state: &AppState) -> FolderTreeNode {
+fn normalized_search_query(query: &str) -> Option<String> {
+    let query = query.trim().to_ascii_lowercase();
+    (!query.is_empty()).then_some(query)
+}
+
+fn request_matches_query(request: &RequestDraft, query: &str) -> bool {
+    let folder = normalize_folder_path(&request.folder);
+    [
+        request.name.as_str(),
+        request.method.as_str(),
+        request.url.as_str(),
+        folder.as_str(),
+    ]
+    .into_iter()
+    .any(|field| field.to_ascii_lowercase().contains(query))
+}
+
+fn build_folder_tree(state: &AppState, search_query: Option<&str>) -> FolderTreeNode {
     let mut root = FolderTreeNode::default();
 
     for (index, request) in state.requests.iter().enumerate() {
+        if let Some(search_query) = search_query
+            && !request_matches_query(request, search_query)
+        {
+            continue;
+        }
         root.insert_request(&normalize_folder_path(&request.folder), index);
     }
 
@@ -115,6 +137,7 @@ fn show_folder_node(
     ui: &mut egui::Ui,
     state: &mut AppState,
     selected_index: Option<usize>,
+    search_active: bool,
     path_prefix: &str,
     segment_name: &str,
     node: &FolderTreeNode,
@@ -132,7 +155,7 @@ fn show_folder_node(
         node.total_request_count()
     ))
     .id_salt(format!("folder::{full_path}"))
-    .default_open(contains_selected)
+    .default_open(search_active || contains_selected)
     .show(ui, |ui| {
         for index in &node.requests {
             show_request_row(ui, state, *index, selected_index);
@@ -143,6 +166,7 @@ fn show_folder_node(
                 ui,
                 state,
                 selected_index,
+                search_active,
                 &full_path,
                 child_name,
                 child_node,
@@ -195,15 +219,50 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
             });
             ui.separator();
 
+            ui.horizontal(|ui| {
+                ui.label("Search");
+                ui.add(
+                    egui::TextEdit::singleline(&mut state.ui.request_search_query)
+                        .hint_text("Name, folder, method, or URL")
+                        .desired_width(f32::INFINITY),
+                );
+                if state.ui.has_request_search() && ui.small_button("Clear").clicked() {
+                    state.ui.clear_request_search();
+                }
+            });
+            ui.add_space(4.0);
+
             let selected_index = state.selected_request_index();
+            let search_query = normalized_search_query(&state.ui.request_search_query);
+            let search_active = search_query.is_some();
 
             if state.requests.is_empty() {
                 ui.label("No requests yet");
             } else {
-                let folder_tree = build_folder_tree(state);
+                let folder_tree = build_folder_tree(state, search_query.as_deref());
                 let has_ungrouped = !folder_tree.requests.is_empty();
+                let matching_request_count = folder_tree.total_request_count();
+
+                if search_active {
+                    if matching_request_count == 0 {
+                        ui.small(format!(
+                            "No requests match '{}'.",
+                            state.ui.request_search_query.trim()
+                        ));
+                    } else {
+                        ui.small(format!(
+                            "Showing {matching_request_count} matching request{}.",
+                            if matching_request_count == 1 { "" } else { "s" }
+                        ));
+                    }
+                    ui.add_space(4.0);
+                }
 
                 egui::ScrollArea::vertical().show(ui, |ui| {
+                    if matching_request_count == 0 {
+                        return;
+                    }
+
                     if has_ungrouped {
                         if !folder_tree.children.is_empty() {
                             ui.small("Ungrouped");
@@ -227,6 +286,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
                                 ui,
                                 state,
                                 selected_index,
+                                search_active,
                                 "",
                                 folder_name,
                                 folder_node,
@@ -264,14 +324,15 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
             ui.heading("Shortcuts");
             ui.separator();
             ui.label("• New/Dup/Del: sidebar buttons");
+            ui.label("• Search: sidebar filter box");
             ui.label("• Send: Use bottom 'Send selected request' button");
         });
 }
 
 #[cfg(test)]
 mod tests {
-    use super::build_folder_tree;
-    use crate::state::AppState;
+    use super::{build_folder_tree, request_matches_query};
+    use crate::state::{AppState, RequestDraft};
 
     #[test]
     fn folder_tree_keeps_root_requests_separate_from_nested_paths() {
@@ -284,7 +345,7 @@ mod tests {
         state.requests[nested].folder = "Collections/API".to_owned();
         state.requests[sibling].folder = "Collections/Auth".to_owned();
 
-        let tree = build_folder_tree(&state);
+        let tree = build_folder_tree(&state, None);
 
         assert_eq!(tree.requests, vec![root]);
         let collections = tree.children.get("Collections").expect("collections node");
@@ -301,5 +362,45 @@ mod tests {
                 .requests,
             vec![sibling]
         );
+    }
+
+    #[test]
+    fn request_search_matches_name_folder_method_and_url() {
+        let mut request = RequestDraft::default_request();
+        request.set_request_name("Create user");
+        request.set_folder_path("Collections/Auth");
+        request.method = "POST".to_owned();
+        request.set_url("https://example.com/users");
+
+        assert!(request_matches_query(&request, "create"));
+        assert!(request_matches_query(&request, "auth"));
+        assert!(request_matches_query(&request, "post"));
+        assert!(request_matches_query(&request, "users"));
+        assert!(!request_matches_query(&request, "billing"));
+    }
+
+    #[test]
+    fn folder_tree_filter_omits_non_matching_branches() {
+        let mut state = AppState::new();
+        let auth_request = state.add_default_request();
+        let api_request = state.add_default_request();
+
+        state.requests[auth_request].set_request_name("Login");
+        state.requests[auth_request].set_folder_path("Collections/Auth");
+        state.requests[api_request].set_request_name("List widgets");
+        state.requests[api_request].set_folder_path("Collections/API");
+
+        let tree = build_folder_tree(&state, Some("auth"));
+
+        let collections = tree.children.get("Collections").expect("collections node");
+        assert_eq!(
+            collections
+                .children
+                .get("Auth")
+                .expect("auth node")
+                .requests,
+            vec![auth_request]
+        );
+        assert!(!collections.children.contains_key("API"));
     }
 }
