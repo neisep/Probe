@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use crate::state::{Result, StateError};
+use serde::{Deserialize, Serialize};
 
 pub const DEFAULT_ENVIRONMENT_NAME: &str = "Default";
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Environment {
     pub name: String,
     pub vars: BTreeMap<String, String>,
