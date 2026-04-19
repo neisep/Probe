@@ -1,4 +1,5 @@
 use crate::state::AppState;
+use crate::ui::theme;
 use eframe::egui;
 
 fn brief_url(url: &str, max: usize) -> String {
@@ -11,19 +12,8 @@ fn brief_url(url: &str, max: usize) -> String {
     }
 }
 
-fn request_method_color(method: &str) -> egui::Color32 {
-    match method {
-        "GET" => egui::Color32::from_rgb(8, 120, 8),
-        "POST" => egui::Color32::from_rgb(8, 40, 160),
-        "PUT" => egui::Color32::from_rgb(160, 120, 8),
-        "DELETE" => egui::Color32::from_rgb(160, 16, 16),
-        _ => egui::Color32::from_gray(120),
-    }
-}
-
 fn select_response_row(state: &mut AppState, row_index: usize) {
     state.ui.select_response(row_index);
-
     if let Some(request_id) = state
         .responses
         .get(row_index)
@@ -35,117 +25,109 @@ fn select_response_row(state: &mut AppState, row_index: usize) {
 }
 
 pub fn show_response_history(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.group(|ui| {
-        ui.heading("Response History");
-        ui.separator();
+    let scoped_indices = state.responses_for_selected_request();
 
-        if state.responses.is_empty() {
-            ui.label("No responses yet");
-        } else {
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                for row_index in (0..state.responses.len()).rev().take(200) {
-                    let Some(response) = state.responses.get(row_index).cloned() else {
-                        continue;
-                    };
-                    let is_selected = state.ui.selected_response == Some(row_index);
-                    let bg_fill = if is_selected {
-                        egui::Color32::from_rgb(230, 245, 255)
-                    } else {
-                        egui::Color32::TRANSPARENT
-                    };
+    if state.ui.selected_request.is_none() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(60.0);
+            ui.label(egui::RichText::new("Select a request to see its history").color(theme::TEXT_MUTED));
+        });
+        return;
+    }
 
-                    egui::Frame::NONE.fill(bg_fill).show(ui, |ui| {
+    if scoped_indices.is_empty() {
+        ui.vertical_centered(|ui| {
+            ui.add_space(60.0);
+            ui.label(egui::RichText::new("No responses for this request yet").color(theme::TEXT_MUTED));
+        });
+        return;
+    }
+
+    egui::ScrollArea::vertical()
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            for row_index in scoped_indices.iter().rev().take(200).copied() {
+                let Some(response) = state.responses.get(row_index).cloned() else {
+                    continue;
+                };
+                let is_selected = state.ui.selected_response == Some(row_index);
+                let bg = if is_selected {
+                    theme::SELECTION.gamma_multiply(0.4)
+                } else {
+                    egui::Color32::TRANSPARENT
+                };
+
+                let row = egui::Frame::NONE
+                    .fill(bg)
+                    .corner_radius(4.0)
+                    .inner_margin(egui::Margin::symmetric(10, 6))
+                    .show(ui, |ui| {
                         ui.horizontal(|ui| {
-                            let request_method =
-                                response.request_method.as_deref().unwrap_or("REQ");
-                            let request_url = response
+                            ui.label(theme::method_badge(
+                                response.request_method.as_deref().unwrap_or("REQ"),
+                            ));
+                            let url = response
                                 .request_url
                                 .as_deref()
                                 .unwrap_or("<request unavailable>");
-
-                            ui.monospace(format!("#{:<3}", row_index + 1));
-
-                            if ui
-                                .add_sized(
-                                    [68.0, 22.0],
-                                    egui::Button::new(
-                                        egui::RichText::new(request_method)
-                                            .monospace()
-                                            .color(request_method_color(request_method)),
-                                    ),
-                                )
-                                .clicked()
-                            {
-                                select_response_row(state, row_index);
-                            }
-
-                            ui.label(brief_url(request_url, 60));
-
-                            ui.separator();
-
-                            let status_text = response
-                                .status
-                                .map(|status| status.to_string())
-                                .unwrap_or_else(|| "pending".into());
-                            let status_color = match response.status {
-                                Some(status) if (200..300).contains(&status) => {
-                                    egui::Color32::from_rgb(40, 160, 40)
-                                }
-                                Some(status) if (300..400).contains(&status) => {
-                                    egui::Color32::from_rgb(200, 160, 32)
-                                }
-                                Some(_) => egui::Color32::from_rgb(190, 60, 60),
-                                None => egui::Color32::from_gray(160),
-                            };
-
                             ui.label(
-                                egui::RichText::new(status_text)
-                                    .color(status_color)
-                                    .monospace(),
+                                egui::RichText::new(brief_url(url, 60))
+                                    .monospace()
+                                    .color(theme::TEXT),
                             );
 
-                            ui.separator();
-
-                            let timing = response
-                                .timing_ms
-                                .map(|t| t.to_string())
-                                .unwrap_or_else(|| "-".into());
-                            ui.label(egui::RichText::new(format!("⏱ {} ms", timing)).monospace());
-                            let size = response
-                                .size_bytes
-                                .map(|s| s.to_string())
-                                .unwrap_or_else(|| "-".into());
-                            ui.label(egui::RichText::new(format!("{} bytes", size)).monospace());
-
-                            if let Some(content_type) = &response.content_type {
-                                ui.separator();
-                                ui.small(content_type);
-                            }
-
-                            if let Some(error) = &response.error {
-                                ui.add(egui::Label::new(
-                                    egui::RichText::new("⚠").color(egui::Color32::YELLOW),
-                                ))
-                                .on_hover_text(error);
-                            }
-
-                            // make the whole row selectable by clicking its area
-                            if ui
-                                .interact(
-                                    ui.max_rect(),
-                                    ui.id().with(row_index),
-                                    egui::Sense::click(),
-                                )
-                                .clicked()
-                            {
-                                select_response_row(state, row_index);
-                            }
+                            ui.with_layout(
+                                egui::Layout::right_to_left(egui::Align::Center),
+                                |ui| {
+                                    ui.label(theme::status_badge(response.status));
+                                    ui.add_space(8.0);
+                                    let timing = response
+                                        .timing_ms
+                                        .map(|t| format!("{} ms", t))
+                                        .unwrap_or_else(|| "—".into());
+                                    ui.label(
+                                        egui::RichText::new(timing)
+                                            .monospace()
+                                            .color(theme::TEXT_MUTED)
+                                            .small(),
+                                    );
+                                    ui.add_space(8.0);
+                                    let size = response
+                                        .size_bytes
+                                        .map(format_bytes)
+                                        .unwrap_or_else(|| "—".into());
+                                    ui.label(
+                                        egui::RichText::new(size)
+                                            .monospace()
+                                            .color(theme::TEXT_MUTED)
+                                            .small(),
+                                    );
+                                },
+                            );
                         });
                     });
 
-                    ui.add_space(6.0);
+                if ui
+                    .interact(
+                        row.response.rect,
+                        ui.id().with(("history_row", row_index)),
+                        egui::Sense::click(),
+                    )
+                    .clicked()
+                {
+                    select_response_row(state, row_index);
                 }
-            });
-        }
-    });
+                ui.add_space(2.0);
+            }
+        });
+}
+
+fn format_bytes(bytes: usize) -> String {
+    if bytes < 1024 {
+        format!("{bytes} B")
+    } else if bytes < 1024 * 1024 {
+        format!("{:.1} KB", bytes as f64 / 1024.0)
+    } else {
+        format!("{:.2} MB", bytes as f64 / (1024.0 * 1024.0))
+    }
 }

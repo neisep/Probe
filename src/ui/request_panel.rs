@@ -1,417 +1,398 @@
-use crate::state::AppState;
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
-use crate::ui::left_sidebar::environment_editor;
+use crate::state::{AppState, RequestDraft, RequestTab};
+use crate::ui::theme;
 use eframe::egui;
 
 pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
-    ui.group(|ui| {
-        let selected_method = state
-            .selected_request()
-            .map(|request| request.method.clone())
-            .unwrap_or_default();
-        let current_folder = state
-            .selected_request()
-            .and_then(|request| request.folder_path())
-            .unwrap_or_default()
-            .to_owned();
-        let existing_folders = state.folder_paths();
-        let mut pending_folder_selection = None;
+    let mut queue_preview_for_selected = false;
 
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| {
-                ui.heading("Request");
-                ui.add_space(4.0);
+    show_header_row(ui, state, &mut queue_preview_for_selected);
+    ui.add_space(8.0);
 
-                ui.horizontal(|ui| {
-                    if let Some(req) = state.selected_request_mut() {
-                        let name_response = ui.add(
-                            egui::TextEdit::singleline(&mut req.name)
-                                .desired_width(220.0)
-                                .hint_text("Request name"),
-                        );
-                        if name_response.lost_focus() {
-                            let name = req.name.clone();
-                            req.set_request_name(&name);
-                        }
-                    } else {
-                        let mut request_name = String::new();
-                        ui.add_enabled(
-                            false,
-                            egui::TextEdit::singleline(&mut request_name)
-                                .desired_width(220.0)
-                                .hint_text("Request name"),
-                        );
-                    }
-                });
+    if state.selected_request_index().is_none() {
+        ui.label(
+            egui::RichText::new("No request selected")
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+        if queue_preview_for_selected
+            && let Some(selected_index) = state.selected_request_index()
+        {
+            state.ui.queue_preview_request(selected_index);
+        }
+        return;
+    }
 
-                ui.add_space(4.0);
+    show_tab_strip(ui, state);
+    ui.add_space(6.0);
 
-                ui.horizontal(|ui| {
-                    ui.label("Folder");
-                    if let Some(req) = state.selected_request_mut() {
-                        let folder_response = ui.add(
-                            egui::TextEdit::singleline(&mut req.folder)
-                                .desired_width(220.0)
-                                .hint_text("Collections/API"),
-                        );
-                        if folder_response.lost_focus() {
-                            let folder = req.folder.clone();
-                            req.set_folder_path(&folder);
-                        }
-                    } else {
-                        let mut request_folder = String::new();
-                        ui.add_enabled(
-                            false,
-                            egui::TextEdit::singleline(&mut request_folder)
-                                .desired_width(220.0)
-                                .hint_text("Collections/API"),
-                        );
-                    }
+    match state.ui.request_tab {
+        RequestTab::Params => show_params_tab(ui, state),
+        RequestTab::Auth => show_auth_tab(ui, state),
+        RequestTab::Headers => show_headers_tab(ui, state),
+        RequestTab::Body => show_body_tab(ui, state),
+    }
 
-                    egui::ComboBox::from_id_salt("request_folder_picker")
-                        .selected_text(if current_folder.is_empty() {
-                            "Move to..."
-                        } else {
-                            "Pick existing"
-                        })
-                        .width(150.0)
-                        .show_ui(ui, |ui| {
-                            for folder in &existing_folders {
-                                let is_selected = folder == &current_folder;
-                                if ui.selectable_label(is_selected, folder).clicked() {
-                                    pending_folder_selection = Some(folder.clone());
-                                }
-                            }
-                        });
+    if queue_preview_for_selected
+        && let Some(selected_index) = state.selected_request_index()
+    {
+        state.ui.queue_preview_request(selected_index);
+    }
+}
 
-                    if ui
-                        .add_enabled(
-                            !current_folder.is_empty(),
-                            egui::Button::new("Clear").small(),
-                        )
-                        .clicked()
-                    {
-                        pending_folder_selection = Some(String::new());
-                    }
-                });
+fn show_header_row(ui: &mut egui::Ui, state: &mut AppState, queue_preview: &mut bool) {
+    let can_preview = state.selected_request_index().is_some();
+    let selected_method = state
+        .selected_request()
+        .map(|r| r.method.clone())
+        .unwrap_or_default();
 
-                if let Some(folder) = pending_folder_selection {
-                    if let Some(req) = state.selected_request_mut() {
-                        req.set_folder_path(&folder);
+    ui.horizontal(|ui| {
+        egui::ComboBox::from_id_salt("request_method_picker")
+            .selected_text(
+                egui::RichText::new(&selected_method)
+                    .monospace()
+                    .strong()
+                    .color(theme::method_color(&selected_method)),
+            )
+            .width(90.0)
+            .show_ui(ui, |ui| {
+                let methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
+                if let Some(req) = state.selected_request_mut() {
+                    for &method in &methods {
+                        ui.selectable_value(&mut req.method, method.to_owned(), method);
                     }
                 }
-
-                if current_folder.is_empty() {
-                    ui.small("Stored at the workspace root. Use / to create nested folders.");
-                } else {
-                    ui.small(format!("Current folder: {current_folder}"));
-                }
-
-                ui.add_space(4.0);
-
-                ui.horizontal(|ui| {
-                    egui::ComboBox::from_label("")
-                        .selected_text(selected_method)
-                        .show_ui(ui, |ui| {
-                            let methods =
-                                ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
-                            if let Some(req) = state.selected_request_mut() {
-                                for &method in &methods {
-                                    ui.selectable_value(&mut req.method, method.to_owned(), method);
-                                }
-                            }
-                        });
-
-                    if let Some(req) = state.selected_request_mut() {
-                        let url_response = ui.add(
-                            egui::TextEdit::singleline(&mut req.url)
-                                .hint_text("https://example.com/path"),
-                        );
-                        if url_response.lost_focus() {
-                            let url = req.url.clone();
-                            if url.contains('?') {
-                                req.adopt_url_query(&url);
-                            } else {
-                                req.set_url(&url);
-                            }
-                        }
-                    } else {
-                        let mut dummy = String::new();
-                        ui.add_enabled(false, egui::TextEdit::singleline(&mut dummy));
-                    }
-                });
             });
+
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui
+                .add_enabled(
+                    can_preview,
+                    egui::Button::new(
+                        egui::RichText::new("Send").strong().color(theme::TEXT_STRONG),
+                    )
+                    .fill(theme::ACCENT.gamma_multiply(0.55)),
+                )
+                .on_hover_text("Review & send (Ctrl+Enter)")
+                .clicked()
+            {
+                *queue_preview = true;
+            }
+
+            ui.add_space(6.0);
+
+            if let Some(req) = state.selected_request_mut() {
+                let url_response = ui.add(
+                    egui::TextEdit::singleline(&mut req.url)
+                        .font(egui::TextStyle::Monospace)
+                        .desired_width(ui.available_width())
+                        .hint_text("https://example.com/path"),
+                );
+                if url_response.lost_focus() {
+                    let url = req.url.clone();
+                    if url.contains('?') {
+                        req.adopt_url_query(&url);
+                    } else {
+                        req.set_url(&url);
+                    }
+                }
+            }
         });
+    });
 
-        ui.separator();
+    ui.add_space(4.0);
 
-        environment_editor::show_request_section(ui, state);
-        ui.add_space(6.0);
+    if let Some(req) = state.selected_request_mut() {
+        ui.horizontal(|ui| {
+            let name_response = ui.add(
+                egui::TextEdit::singleline(&mut req.name)
+                    .desired_width(240.0)
+                    .hint_text("Request name"),
+            );
+            if name_response.lost_focus() {
+                let name = req.name.clone();
+                req.set_request_name(&name);
+            }
 
-        if let Some(req) = state.selected_request_mut() {
-            ui.collapsing("Query Parameters", |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Name");
-                        ui.add_space(8.0);
-                        ui.label("Value");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("+ Add").clicked() {
-                                req.query_params.push((String::new(), String::new()));
-                            }
-                        });
-                    });
+            ui.label(egui::RichText::new("·").color(theme::TEXT_MUTED));
 
-                    ui.separator();
+            let folder_response = ui.add(
+                egui::TextEdit::singleline(&mut req.folder)
+                    .desired_width(200.0)
+                    .hint_text("Folder (optional)"),
+            );
+            if folder_response.lost_focus() {
+                let folder = req.folder.clone();
+                req.set_folder_path(&folder);
+            }
+        });
+    }
+}
 
-                    let mut remove_idx: Option<usize> = None;
-                    for i in 0..req.query_params.len() {
-                        let (key, value) = &mut req.query_params[i];
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(key)
-                                    .desired_width(120.0)
-                                    .hint_text("Param name"),
-                            );
-                            ui.add(
-                                egui::TextEdit::singleline(value)
-                                    .desired_width(240.0)
-                                    .hint_text("Param value"),
-                            );
-                            if ui.small_button("✕").clicked() {
-                                remove_idx = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove_idx {
-                        if i < req.query_params.len() {
-                            req.query_params.remove(i);
-                        }
-                    }
-
-                    if req.query_params.is_empty() {
-                        ui.monospace("No query parameters. Use + Add to create one.");
-                    } else {
-                        let active_count = req
-                            .query_params
-                            .iter()
-                            .filter(|(key, _value)| !key.trim().is_empty())
-                            .count();
-                        ui.small(format!(
-                            "{active_count} query rows will be applied when sending."
-                        ));
-                    }
-
-                    ui.small(
-                        "Rows with blank names are ignored. Paste a full URL to backfill rows.",
-                    );
-                });
-            });
-
-            ui.add_space(6.0);
-
-            ui.collapsing("Authentication", |ui| {
-                ui.vertical(|ui| {
-                    let mut auth_kind = req.auth.kind();
-
-                    ui.horizontal(|ui| {
-                        ui.label("Mode");
-                        egui::ComboBox::from_id_salt("request_auth_mode")
-                            .selected_text(auth_kind.label())
-                            .width(160.0)
-                            .show_ui(ui, |ui| {
-                                for kind in RequestAuthKind::ALL {
-                                    ui.selectable_value(&mut auth_kind, kind, kind.label());
-                                }
-                            });
-                    });
-
-                    if auth_kind != req.auth.kind() {
-                        req.auth = RequestAuth::from_kind(auth_kind);
-                    }
-
-                    match &mut req.auth {
-                        RequestAuth::None => {
-                            ui.monospace("No authentication. Manual headers still work.");
-                        }
-                        RequestAuth::Bearer { token } => {
-                            ui.add(
-                                egui::TextEdit::singleline(token)
-                                    .desired_width(320.0)
-                                    .hint_text("Bearer token or {{API_TOKEN}}"),
-                            );
-                            ui.small("Sends Authorization: Bearer <token>. Supports {{vars}}.");
-                        }
-                        RequestAuth::Basic { username, password } => {
-                            ui.horizontal(|ui| {
-                                ui.add(
-                                    egui::TextEdit::singleline(username)
-                                        .desired_width(140.0)
-                                        .hint_text("Username or {{USER}}"),
-                                );
-                                ui.add(
-                                    egui::TextEdit::singleline(password)
-                                        .desired_width(180.0)
-                                        .hint_text("Password or {{PASS}}")
-                                        .password(true),
-                                );
-                            });
-                            ui.small(
-                                "Sends Authorization: Basic base64(username:password). Supports {{vars}}.",
-                            );
-                        }
-                        RequestAuth::ApiKey {
-                            location,
-                            name,
-                            value,
-                        } => {
-                            ui.horizontal(|ui| {
-                                let mut selected_location = *location;
-                                egui::ComboBox::from_id_salt("request_api_key_location")
-                                    .selected_text(selected_location.label())
-                                    .width(120.0)
-                                    .show_ui(ui, |ui| {
-                                        for candidate in ApiKeyLocation::ALL {
-                                            ui.selectable_value(
-                                                &mut selected_location,
-                                                candidate,
-                                                candidate.label(),
-                                            );
-                                        }
-                                    });
-                                *location = selected_location;
-
-                                ui.add(
-                                    egui::TextEdit::singleline(name)
-                                        .desired_width(140.0)
-                                        .hint_text(match selected_location {
-                                            ApiKeyLocation::Header => "Header name",
-                                            ApiKeyLocation::Query => "Param name",
-                                        }),
-                                );
-                                ui.add(
-                                    egui::TextEdit::singleline(value)
-                                        .desired_width(180.0)
-                                        .hint_text("Value or {{API_KEY}}"),
-                                );
-                            });
-                            ui.small(match location {
-                                ApiKeyLocation::Header => {
-                                    "Injects a header during send. Use a unique name to avoid header conflicts."
-                                }
-                                ApiKeyLocation::Query => {
-                                    "Appends a query parameter during send. Supports {{vars}}."
-                                }
-                            });
-                        }
-                    }
-
-                    ui.small(
-                        "Auth presets are stored with the request draft. Prefer environment placeholders for secrets.",
-                    );
-                });
-            });
-
-            ui.add_space(6.0);
-
-            ui.collapsing("Headers", |ui| {
-                ui.vertical(|ui| {
-                    ui.horizontal(|ui| {
-                        ui.label("Name");
-                        ui.add_space(8.0);
-                        ui.label("Value");
-                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.small_button("+ Add").clicked() {
-                                req.headers.push((String::new(), String::new()));
-                            }
-                        });
-                    });
-
-                    ui.separator();
-
-                    // Editable header rows
-                    let mut remove_idx: Option<usize> = None;
-                    for i in 0..req.headers.len() {
-                        // Use indexing to get mutable refs safely
-                        let (k, v) = &mut req.headers[i];
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::TextEdit::singleline(k)
-                                    .desired_width(120.0)
-                                    .hint_text("Header name"),
-                            );
-                            ui.add(
-                                egui::TextEdit::singleline(v)
-                                    .desired_width(240.0)
-                                    .hint_text("Header value"),
-                            );
-                            if ui.small_button("✕").clicked() {
-                                remove_idx = Some(i);
-                            }
-                        });
-                    }
-                    if let Some(i) = remove_idx {
-                        if i < req.headers.len() {
-                            req.headers.remove(i);
-                        }
-                    }
-
-                    if req.headers.is_empty() {
-                        ui.monospace("No headers. Use + Add to create one.");
-                    }
-                });
-            });
-
-            ui.add_space(6.0);
-
-            ui.collapsing("Body", |ui| {
-                ui.vertical(|ui| {
-                    // Provide a safe editable buffer for Option<String>
-                    let mut body_buf = match &req.body {
-                        Some(b) => b.clone(),
-                        None => String::new(),
-                    };
-
-                    let edit = ui.add(
-                        egui::TextEdit::multiline(&mut body_buf)
-                            .desired_rows(8)
-                            .hint_text("Optional request body (JSON, text, etc.)"),
-                    );
-
-                    // Body stats and lightweight hints
-                    let bytes = body_buf.as_bytes().len();
-                    let lines = body_buf.lines().count();
-                    let mut hint = "".to_string();
-                    if body_buf.trim_start().starts_with('{')
-                        || body_buf.trim_start().starts_with('[')
-                    {
-                        hint = "Looks like JSON".to_string();
-                    } else if body_buf.contains("=") && body_buf.contains("&") {
-                        hint = "Looks like form data".to_string();
-                    }
-
-                    ui.horizontal(|ui| {
-                        ui.label(format!("{} bytes", bytes));
-                        ui.add_space(8.0);
-                        ui.label(format!("{} lines", lines));
-                        if !hint.is_empty() {
-                            ui.add_space(8.0);
-                            ui.monospace(hint);
-                        }
-                    });
-
-                    if edit.changed() {
-                        let trimmed = body_buf.trim();
-                        if trimmed.is_empty() {
-                            req.body = None;
-                        } else {
-                            req.body = Some(body_buf);
-                        }
-                    }
-                });
-            });
-        } else {
-            ui.label("No request selected");
+fn show_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.horizontal(|ui| {
+        for tab in RequestTab::ALL {
+            let selected = state.ui.request_tab == tab;
+            let text = if selected {
+                egui::RichText::new(tab.label())
+                    .color(theme::ACCENT_STRONG)
+                    .strong()
+            } else {
+                egui::RichText::new(tab.label()).color(theme::TEXT_MUTED)
+            };
+            let button = ui.add(egui::Button::new(text).frame(false));
+            if button.clicked() {
+                state.ui.request_tab = tab;
+            }
+            if let Some(count) = tab_count_hint(state, tab) {
+                ui.label(
+                    egui::RichText::new(format!("{count}"))
+                        .color(theme::TEXT_MUTED)
+                        .small(),
+                );
+            }
+            ui.add_space(10.0);
         }
     });
+}
+
+fn tab_count_hint(state: &AppState, tab: RequestTab) -> Option<usize> {
+    let req = state.selected_request()?;
+    match tab {
+        RequestTab::Params => {
+            let n = req
+                .query_params
+                .iter()
+                .filter(|(k, _)| !k.trim().is_empty())
+                .count();
+            (n > 0).then_some(n)
+        }
+        RequestTab::Headers => {
+            let n = req.headers.iter().filter(|(k, _)| !k.trim().is_empty()).count();
+            (n > 0).then_some(n)
+        }
+        RequestTab::Body => req
+            .body
+            .as_deref()
+            .filter(|body| !body.is_empty())
+            .map(|body| body.len()),
+        RequestTab::Auth => None,
+    }
+}
+
+fn show_params_tab(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(req) = state.selected_request_mut() else {
+        return;
+    };
+    show_kv_editor(
+        ui,
+        &mut req.query_params,
+        "param_name",
+        "param_value",
+        "No query parameters",
+    );
+}
+
+fn show_headers_tab(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(req) = state.selected_request_mut() else {
+        return;
+    };
+    show_kv_editor(
+        ui,
+        &mut req.headers,
+        "header_name",
+        "header_value",
+        "No headers",
+    );
+}
+
+fn show_kv_editor(
+    ui: &mut egui::Ui,
+    rows: &mut Vec<(String, String)>,
+    name_hint: &str,
+    value_hint: &str,
+    empty_text: &str,
+) {
+    let mut remove_idx: Option<usize> = None;
+    for i in 0..rows.len() {
+        let (key, value) = &mut rows[i];
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(key)
+                    .desired_width(160.0)
+                    .hint_text(name_hint),
+            );
+            ui.add(
+                egui::TextEdit::singleline(value)
+                    .desired_width(300.0)
+                    .hint_text(value_hint),
+            );
+            if ui.small_button("×").clicked() {
+                remove_idx = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove_idx
+        && i < rows.len()
+    {
+        rows.remove(i);
+    }
+
+    if rows.is_empty() {
+        ui.label(
+            egui::RichText::new(empty_text)
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
+    }
+
+    ui.add_space(4.0);
+    if ui.small_button("+ Add row").clicked() {
+        rows.push((String::new(), String::new()));
+    }
+}
+
+fn show_auth_tab(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(req) = state.selected_request_mut() else {
+        return;
+    };
+
+    let mut auth_kind = req.auth.kind();
+    ui.horizontal(|ui| {
+        ui.label(egui::RichText::new("Type").color(theme::TEXT_MUTED).small());
+        egui::ComboBox::from_id_salt("request_auth_mode")
+            .selected_text(auth_kind.label())
+            .width(180.0)
+            .show_ui(ui, |ui| {
+                for kind in RequestAuthKind::ALL {
+                    ui.selectable_value(&mut auth_kind, kind, kind.label());
+                }
+            });
+    });
+
+    if auth_kind != req.auth.kind() {
+        req.auth = RequestAuth::from_kind(auth_kind);
+    }
+
+    ui.add_space(6.0);
+
+    match &mut req.auth {
+        RequestAuth::None => {
+            ui.label(
+                egui::RichText::new("No authentication")
+                    .color(theme::TEXT_MUTED)
+                    .italics(),
+            );
+        }
+        RequestAuth::Bearer { token } => {
+            ui.add(
+                egui::TextEdit::singleline(token)
+                    .desired_width(360.0)
+                    .hint_text("Bearer token or {{API_TOKEN}}"),
+            );
+        }
+        RequestAuth::Basic { username, password } => {
+            ui.horizontal(|ui| {
+                ui.add(
+                    egui::TextEdit::singleline(username)
+                        .desired_width(160.0)
+                        .hint_text("Username"),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(password)
+                        .desired_width(200.0)
+                        .password(true)
+                        .hint_text("Password"),
+                );
+            });
+        }
+        RequestAuth::ApiKey {
+            location,
+            name,
+            value,
+        } => {
+            ui.horizontal(|ui| {
+                let mut selected_location = *location;
+                egui::ComboBox::from_id_salt("request_api_key_location")
+                    .selected_text(selected_location.label())
+                    .width(120.0)
+                    .show_ui(ui, |ui| {
+                        for candidate in ApiKeyLocation::ALL {
+                            ui.selectable_value(
+                                &mut selected_location,
+                                candidate,
+                                candidate.label(),
+                            );
+                        }
+                    });
+                *location = selected_location;
+
+                ui.add(
+                    egui::TextEdit::singleline(name)
+                        .desired_width(160.0)
+                        .hint_text(match selected_location {
+                            ApiKeyLocation::Header => "Header name",
+                            ApiKeyLocation::Query => "Param name",
+                        }),
+                );
+                ui.add(
+                    egui::TextEdit::singleline(value)
+                        .desired_width(200.0)
+                        .hint_text("Value or {{API_KEY}}"),
+                );
+            });
+        }
+    }
+}
+
+fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {
+    let Some(req) = state.selected_request_mut() else {
+        return;
+    };
+
+    let mut body_buf = req.body.clone().unwrap_or_default();
+    let edit = ui.add(
+        egui::TextEdit::multiline(&mut body_buf)
+            .font(egui::TextStyle::Monospace)
+            .desired_rows(10)
+            .desired_width(f32::INFINITY)
+            .hint_text("Request body (JSON, text, …)"),
+    );
+
+    if edit.changed() {
+        let trimmed = body_buf.trim();
+        req.body = if trimmed.is_empty() {
+            None
+        } else {
+            Some(body_buf.clone())
+        };
+    }
+
+    let hint = if body_buf.trim_start().starts_with('{') || body_buf.trim_start().starts_with('[') {
+        Some("JSON")
+    } else if body_buf.contains('=') && body_buf.contains('&') {
+        Some("form")
+    } else {
+        None
+    };
+
+    ui.horizontal(|ui| {
+        ui.label(
+            egui::RichText::new(format!("{} bytes · {} lines", body_buf.len(), body_buf.lines().count()))
+                .color(theme::TEXT_MUTED)
+                .small(),
+        );
+        if let Some(h) = hint {
+            ui.label(
+                egui::RichText::new(h)
+                    .color(theme::TEXT_MUTED)
+                    .monospace()
+                    .small(),
+            );
+        }
+    });
+
+    // Keep unused import happy (RequestDraft used via mut ref).
+    let _: &RequestDraft = &*req;
 }

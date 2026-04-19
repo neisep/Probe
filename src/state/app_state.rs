@@ -338,6 +338,26 @@ impl AppState {
             .selected_response
             .and_then(|selected_response| self.responses.get(selected_response))
     }
+
+    pub fn responses_for_selected_request(&self) -> Vec<usize> {
+        let Some(request_index) = self.ui.selected_request else {
+            return Vec::new();
+        };
+        let request_id = Self::request_id_for_index(request_index);
+        self.responses
+            .iter()
+            .enumerate()
+            .filter_map(|(index, response)| {
+                (response.request_id.as_deref() == Some(request_id.as_str())).then_some(index)
+            })
+            .collect()
+    }
+
+    pub fn latest_response_for_selected_request(&self) -> Option<&ResponseSummary> {
+        self.responses_for_selected_request()
+            .last()
+            .and_then(|&index| self.responses.get(index))
+    }
 }
 
 impl Default for AppState {
