@@ -6,6 +6,7 @@ pub struct RequestDraft {
     pub folder: String,
     pub method: String,
     pub url: String,
+    pub query_params: Vec<(String, String)>,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
 }
@@ -17,6 +18,7 @@ impl RequestDraft {
             folder: String::new(),
             method: "GET".to_owned(),
             url: "https://example.com".to_owned(),
+            query_params: Vec::new(),
             headers: Vec::new(),
             body: None,
         }
@@ -38,6 +40,7 @@ impl RequestDraft {
             folder: String::new(),
             method: method.to_uppercase(),
             url: url.to_owned(),
+            query_params: Vec::new(),
             headers: Vec::new(),
             body: None,
         })
@@ -81,6 +84,16 @@ impl RequestDraft {
         self.folder = normalize_folder_path(folder_path);
     }
 
+    pub fn set_url(&mut self, url: &str) {
+        self.url = url.trim().to_owned();
+    }
+
+    pub fn adopt_url_query(&mut self, url: &str) {
+        let (base_url, query_params) = split_url_query(url);
+        self.url = base_url;
+        self.query_params = query_params;
+    }
+
     pub fn set_organization(&mut self, name: &str, folder_path: &str) {
         self.name = normalize_request_name(name).unwrap_or_default();
         self.folder = normalize_folder_path(folder_path);
@@ -108,6 +121,34 @@ pub fn normalize_folder_path(value: &str) -> String {
         .join("/")
 }
 
+fn split_url_query(url: &str) -> (String, Vec<(String, String)>) {
+    let normalized_url = url.trim();
+    let (before_fragment, fragment) = match normalized_url.split_once('#') {
+        Some((before_fragment, fragment)) => (before_fragment, Some(fragment)),
+        None => (normalized_url, None),
+    };
+    let Some((base_url, query)) = before_fragment.split_once('?') else {
+        return (normalized_url.to_owned(), Vec::new());
+    };
+
+    let base_url = match fragment {
+        Some(fragment) if !fragment.is_empty() => format!("{base_url}#{fragment}"),
+        Some(_fragment) => base_url.to_owned(),
+        None => base_url.to_owned(),
+    };
+
+    let query_params = query
+        .split('&')
+        .filter(|pair| !pair.is_empty())
+        .map(|pair| match pair.split_once('=') {
+            Some((key, value)) => (key.to_owned(), value.to_owned()),
+            None => (pair.to_owned(), String::new()),
+        })
+        .collect();
+
+    (base_url, query_params)
+}
+
 #[cfg(test)]
 mod tests {
     use super::RequestDraft;
@@ -120,6 +161,7 @@ mod tests {
         assert!(draft.folder.is_empty());
         assert_eq!(draft.method, "GET");
         assert_eq!(draft.url, "https://example.com");
+        assert!(draft.query_params.is_empty());
         assert!(draft.headers.is_empty());
         assert!(draft.body.is_none());
     }
@@ -131,6 +173,7 @@ mod tests {
             folder: "Items".to_owned(),
             method: "POST".to_owned(),
             url: "https://example.com/items".to_owned(),
+            query_params: vec![("page".to_owned(), "1".to_owned())],
             headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
             body: Some("{\"ok\":true}".to_owned()),
         };
@@ -141,6 +184,7 @@ mod tests {
         assert_eq!(clone.folder, draft.folder);
         assert_eq!(clone.method, draft.method);
         assert_eq!(clone.url, draft.url);
+        assert_eq!(clone.query_params, draft.query_params);
         assert_eq!(clone.headers, draft.headers);
         assert_eq!(clone.body, draft.body);
     }
@@ -177,5 +221,20 @@ mod tests {
 
         assert_eq!(draft.folder, "Collections/API/v1/Health");
         assert_eq!(draft.folder_path(), Some("Collections/API/v1/Health"));
+    }
+
+    #[test]
+    fn adopt_url_query_extracts_query_rows_and_preserves_fragment() {
+        let mut draft = RequestDraft::default_request();
+        draft.adopt_url_query(" https://example.com/items?limit=10&offset=20#details ");
+
+        assert_eq!(draft.url, "https://example.com/items#details");
+        assert_eq!(
+            draft.query_params,
+            vec![
+                ("limit".to_owned(), "10".to_owned()),
+                ("offset".to_owned(), "20".to_owned()),
+            ]
+        );
     }
 }

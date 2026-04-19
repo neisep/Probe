@@ -2,7 +2,7 @@
   "id": "request-0",
   "workspace_id": "default",
   "path": "selected-request",
-  "content": "{\"name\":\"GET https://api.restful-api.dev/objects\",\"folder\":\"selected-request\",\"method\":\"GET\",\"url\":\"https://api.restful-api.dev/objects\",\"headers\":[],\"body\":null}",
+  "content": "{\"name\":\"GET https://api.restful-api.dev/objects\",\"folder\":\"selected-request\",\"method\":\"GET\",\"url\":\"https://api.restful-api.dev/objects\",\"query_params\":[],\"headers\":[],\"body\":null}",
   "created_at": null,
   "tags": [
     "request",
