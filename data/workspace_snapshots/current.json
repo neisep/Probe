@@ -13,12 +13,13 @@
     "response-0",
     "response-1",
     "response-2",
-    "response-3"
+    "response-3",
+    "response-4"
   ],
   "meta": {
     "request_count": 1,
-    "response_count": 4,
+    "response_count": 5,
     "selected_request": 0,
-    "selected_response": 3
+    "selected_response": 4
   }
 }

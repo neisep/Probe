@@ -12,6 +12,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
   - Owns app startup, restore/save, runtime polling, send actions, and projection of runtime results into UI state.
   - Resolves active-environment `{{var}}` placeholders before sending requests.
   - Normalizes request organization metadata before persistence restore/save.
+  - Builds final outbound URLs from the base URL plus saved query parameters.
 
 - `src/state/`
   - In-memory domain and UI state.
@@ -21,7 +22,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
     - Tracks reusable folder paths for the request workspace.
   - `request.rs`
     - Request draft model.
-    - Request name, folder path, method, URL, headers, optional body.
+    - Request name, folder path, method, base URL, query params, headers, optional body.
   - `response.rs`
     - Response summary model used by the UI and persistence restore path.
     - Carries request metadata, response metadata, preview text, and header lists.
@@ -66,7 +67,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
     - Compact environment selector/editor UI.
     - Included from `left_sidebar.rs` with `#[path = "environment_editor.rs"]`.
   - `request_panel.rs`
-    - Request editor for name, folder path, method, URL, environment variables, headers, and body.
+    - Request editor for name, folder path, method, base URL, query params, environment variables, headers, and body.
   - `response_panel.rs`
     - Response history list and response selection.
   - `inspector.rs`
@@ -84,6 +85,7 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 - Multi-request workspace.
 - Editable request drafts.
 - Nested request folders with lightweight collection-style organization.
+- Structured query parameter editing with safe URL composition on send.
 - Async send flow with response history.
 - Response detail inspection with request/response headers.
 - Lightweight environments with active-environment selection.
@@ -100,6 +102,6 @@ Quick map of the current architecture. For file-by-file detail, use `docs/memory
 
 ## Expected next major areas
 
-- Request ergonomics like auth/query tooling.
+- Request auth tooling.
 - Import/export.
 - Final MVP polish.

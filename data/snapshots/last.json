@@ -6,6 +6,7 @@
     "headers": [],
     "method": "GET",
     "name": "GET https://api.restful-api.dev/objects",
+    "query_params": [],
     "selected_request": 0,
     "url": "https://api.restful-api.dev/objects"
   }
