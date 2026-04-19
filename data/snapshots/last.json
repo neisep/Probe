@@ -2,8 +2,10 @@
   "id": "last",
   "data": {
     "body": null,
+    "folder": "selected-request",
     "headers": [],
     "method": "GET",
+    "name": "GET https://api.restful-api.dev/objects",
     "selected_request": 0,
     "url": "https://api.restful-api.dev/objects"
   }

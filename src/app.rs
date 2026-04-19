@@ -4,7 +4,10 @@ use std::time::Duration;
 use crate::persistence::FileStorage;
 use crate::persistence::Snapshot;
 use crate::persistence::WorkspaceSnapshot;
-use crate::runtime::{AsyncRequest, AsyncRequestResult, Event, Runtime};
+use crate::runtime::{
+    AsyncRequest, AsyncRequestResult, Event, ResolutionValues, Runtime, UnresolvedBehavior,
+};
+use crate::state::request::{normalize_folder_path, normalize_request_name};
 use crate::state::{AppState, View};
 use crate::ui::shell;
 use serde::{Deserialize, Serialize};
@@ -16,6 +19,10 @@ const DEFAULT_WORKSPACE_ID: &str = "default";
 
 #[derive(Debug, Serialize, Deserialize)]
 struct PersistedRequestDraft {
+    #[serde(default)]
+    name: String,
+    #[serde(default)]
+    folder: String,
     method: String,
     url: String,
     #[serde(default)]
@@ -102,11 +109,17 @@ impl ProbeApp {
             Some(selected_request_id) => selected_request_id,
             None => AppState::request_id_for_index(selected_request_index),
         };
+        let active_environment_id = self
+            .state
+            .active_environment_index()
+            .map(environment_storage_id_for_index);
 
         let snapshot = Snapshot {
             id: LEGACY_SNAPSHOT_ID.to_owned(),
             data: json!({
                 "selected_request": Some(selected_request_index),
+                "name": normalize_request_name(&request.name).unwrap_or_default(),
+                "folder": normalize_folder_path(&request.folder),
                 "method": request.method,
                 "url": request.url,
                 "headers": request.headers,
@@ -129,10 +142,18 @@ impl ProbeApp {
             return;
         }
 
+        let environment_snapshot = build_environment_snapshot(&self.state);
+        if let Err(error) = storage.save_environment_snapshot(&environment_snapshot) {
+            self.status = format!("Save failed: {error}");
+            return;
+        }
+
         let mut draft_ids = Vec::with_capacity(self.state.requests.len());
         for (index, request) in self.state.requests.iter().enumerate() {
             let draft_id = AppState::request_id_for_index(index);
             let draft_content = match serde_json::to_string(&PersistedRequestDraft {
+                name: normalize_request_name(&request.name).unwrap_or_default(),
+                folder: normalize_folder_path(&request.folder),
                 method: request.method.clone(),
                 url: request.url.clone(),
                 headers: request.headers.clone(),
@@ -148,7 +169,7 @@ impl ProbeApp {
             let draft = crate::persistence::models::Draft {
                 id: draft_id.clone(),
                 workspace_id: Some(DEFAULT_WORKSPACE_ID.to_owned()),
-                path: Some(format!("request-{index}")),
+                path: normalized_optional_value(Some(&normalize_folder_path(&request.folder))),
                 content: draft_content,
                 created_at: None,
                 tags: vec!["request".to_owned(), "mvp".to_owned()],
@@ -171,6 +192,18 @@ impl ProbeApp {
             };
 
             if let Err(error) = storage.save_draft_preview(&draft_preview) {
+                self.status = format!("Save failed: {error}");
+                return;
+            }
+
+            let request_metadata = crate::persistence::models::RequestMetadata {
+                request_name: normalize_request_name(&request.name),
+                folder_path: normalized_optional_value(Some(&normalize_folder_path(
+                    &request.folder,
+                ))),
+            };
+
+            if let Err(error) = storage.save_draft_request_metadata(&draft_id, &request_metadata) {
                 self.status = format!("Save failed: {error}");
                 return;
             }
@@ -289,6 +322,11 @@ impl ProbeApp {
 
         if let Err(error) = storage.save_selected_request(Some(&selected_request_id)) {
             self.status = format!("Save failed: {error}");
+            return;
+        }
+
+        if let Err(error) = storage.save_active_environment(active_environment_id.as_deref()) {
+            self.status = format!("Save failed: {error}");
         }
     }
 }
@@ -385,20 +423,31 @@ impl eframe::App for ProbeApp {
                             self.status = "No request selected".to_owned();
                             return;
                         };
-                        let pending_request_context = PendingRequestContext {
-                            request_id: AppState::request_id_for_index(selected_request_index),
-                            method: req.method.clone(),
-                            url: req.url.clone(),
-                            headers: req.headers.clone(),
-                        };
-
                         let ar = AsyncRequest {
                             url: req.url.clone(),
                             method: req.method.clone(),
                             headers: req.headers.clone(),
                             body: req.body.as_ref().map(|b| b.as_bytes().to_vec()),
                         };
-                        match runtime.submit_blocking(ar) {
+                        let resolution_values = active_resolution_values(&self.state);
+                        let prepared_request = match ar
+                            .resolve_with_behavior(&resolution_values, UnresolvedBehavior::Error)
+                        {
+                            Ok(prepared_request) => prepared_request,
+                            Err(error) => {
+                                let error_info = error.to_error_info();
+                                self.status = format_error(&error_info);
+                                return;
+                            }
+                        };
+                        let pending_request_context = PendingRequestContext {
+                            request_id: AppState::request_id_for_index(selected_request_index),
+                            method: prepared_request.method.clone(),
+                            url: prepared_request.url.clone(),
+                            headers: prepared_request.headers.clone(),
+                        };
+
+                        match runtime.submit_blocking(prepared_request) {
                             Ok(id) => {
                                 self.pending_request = Some(id);
                                 self.pending_request_context = Some(pending_request_context);
@@ -427,6 +476,8 @@ impl eframe::App for ProbeApp {
 }
 
 fn restore_last_snapshot(state: &mut AppState, storage: &FileStorage) {
+    restore_environment_snapshot(state, storage);
+
     if restore_workspace_snapshot(state, storage) {
         return;
     }
@@ -447,6 +498,18 @@ fn restore_last_snapshot(state: &mut AppState, storage: &FileStorage) {
     }
 
     if let Some(request) = state.selected_request_mut() {
+        if let Some(name) = snapshot.data.get("name").and_then(|name| name.as_str()) {
+            request.set_request_name(name);
+        }
+
+        if let Some(folder) = snapshot
+            .data
+            .get("folder")
+            .and_then(|folder| folder.as_str())
+        {
+            request.set_folder_path(folder);
+        }
+
         if let Some(method) = snapshot
             .data
             .get("method")
@@ -492,17 +555,41 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
         let Ok(draft) = storage.load_draft(draft_id) else {
             continue;
         };
+        let request_metadata = storage.load_draft_request_metadata(draft_id).ok();
         let Ok(persisted_request) = serde_json::from_str::<PersistedRequestDraft>(&draft.content)
         else {
             continue;
         };
 
-        restored_requests.push(crate::state::RequestDraft {
+        let mut restored_request = crate::state::RequestDraft {
+            name: String::new(),
+            folder: String::new(),
             method: persisted_request.method,
             url: persisted_request.url,
             headers: persisted_request.headers,
             body: persisted_request.body,
-        });
+        };
+        restored_request.set_request_name(
+            normalized_optional_value(Some(persisted_request.name.as_str()))
+                .or_else(|| {
+                    request_metadata.as_ref().and_then(|request_metadata| {
+                        normalized_optional_value(request_metadata.request_name.as_deref())
+                    })
+                })
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        restored_request.set_folder_path(
+            normalized_optional_value(Some(persisted_request.folder.as_str()))
+                .or_else(|| {
+                    request_metadata.as_ref().and_then(|request_metadata| {
+                        normalized_optional_value(request_metadata.folder_path.as_deref())
+                    })
+                })
+                .as_deref()
+                .unwrap_or_default(),
+        );
+        restored_requests.push(restored_request);
     }
 
     if restored_requests.is_empty() {
@@ -636,6 +723,93 @@ fn restore_workspace_snapshot(state: &mut AppState, storage: &FileStorage) -> bo
 
     state.ensure_valid_selection();
     true
+}
+
+fn environment_storage_id_for_index(index: usize) -> String {
+    format!("env-{index}")
+}
+
+fn build_environment_snapshot(state: &AppState) -> crate::persistence::models::EnvironmentSnapshot {
+    crate::persistence::models::EnvironmentSnapshot {
+        active_environment: state
+            .active_environment_index()
+            .map(environment_storage_id_for_index),
+        environments: state
+            .environments
+            .iter()
+            .enumerate()
+            .map(
+                |(index, environment)| crate::persistence::models::Environment {
+                    id: environment_storage_id_for_index(index),
+                    name: environment.name.clone(),
+                    entries: environment
+                        .vars
+                        .iter()
+                        .map(
+                            |(key, value)| crate::persistence::models::EnvironmentEntry {
+                                key: key.clone(),
+                                value: value.clone(),
+                            },
+                        )
+                        .collect(),
+                },
+            )
+            .collect(),
+    }
+}
+
+fn restore_environment_snapshot(state: &mut AppState, storage: &FileStorage) {
+    let Ok(snapshot) = storage.load_environment_snapshot() else {
+        state.ensure_valid_environment_selection();
+        return;
+    };
+
+    if snapshot.environments.is_empty() {
+        state.ensure_valid_environment_selection();
+        return;
+    }
+
+    let mut active_environment = None;
+    let mut restored_environments = Vec::with_capacity(snapshot.environments.len());
+
+    for (index, environment) in snapshot.environments.into_iter().enumerate() {
+        if snapshot.active_environment.as_deref() == Some(environment.id.as_str()) {
+            active_environment = Some(index);
+        }
+
+        let vars = environment
+            .entries
+            .into_iter()
+            .filter_map(|entry| {
+                let key = entry.key.trim().to_owned();
+                if key.is_empty() {
+                    return None;
+                }
+
+                Some((key, entry.value))
+            })
+            .collect();
+
+        restored_environments.push(crate::state::Environment {
+            name: environment.name,
+            vars,
+        });
+    }
+
+    state.environments = restored_environments;
+    state.active_environment = active_environment;
+    state.ensure_valid_environment_selection();
+}
+
+fn active_resolution_values(state: &AppState) -> ResolutionValues {
+    state.active_variables().cloned().unwrap_or_default()
+}
+
+fn normalized_optional_value(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
 }
 
 fn apply_pending_request_context(

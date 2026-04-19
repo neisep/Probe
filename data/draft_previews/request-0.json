@@ -1,0 +1,17 @@
+{
+  "id": "request-0",
+  "draft_id": "request-0",
+  "method": "GET",
+  "target_url": "https://api.restful-api.dev/objects",
+  "preview_title": "GET https://api.restful-api.dev/objects",
+  "preview_snippet": null,
+  "workspace_id": "default",
+  "request_metadata": {
+    "request_name": "GET https://api.restful-api.dev/objects",
+    "folder_path": "selected-request"
+  },
+  "tags": [
+    "request"
+  ],
+  "created_at": null
+}

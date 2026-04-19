@@ -2,6 +2,8 @@
   "id": "response-1",
   "response_id": "response-1",
   "summary": "HTTP 200",
+  "request_method": null,
+  "request_url": null,
   "content_preview": null,
   "content_type": null,
   "header_count": null,
@@ -9,5 +11,9 @@
   "model": null,
   "tokens": null,
   "tags": [],
-  "created_at": null
+  "created_at": null,
+  "detail": {
+    "request_headers": [],
+    "response_headers": []
+  }
 }

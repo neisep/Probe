@@ -1,12 +1,13 @@
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
 use crate::persistence::models::{
-    Draft, DraftPreview, ResponsePreview, ResponsePreviewDetail, ResponseSummary, SessionState,
-    Snapshot, UIState, WorkspaceSnapshot,
+    Draft, DraftPreview, Environment, EnvironmentSnapshot, RequestMetadata, ResponsePreview,
+    ResponsePreviewDetail, ResponseSummary, SessionState, Snapshot, UIState, WorkspaceSnapshot,
 };
 
 /// Errors surfaced by the persistence layer.
@@ -40,6 +41,7 @@ const ALLOWED_CATEGORIES: &[&str] = &[
     // new preview and session categories
     "draft_previews",
     "response_previews",
+    "environments",
     "session",
 ];
 
@@ -52,10 +54,66 @@ fn is_valid_key(key: &str) -> bool {
         .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
+fn merge_missing_request_metadata(
+    mut request_metadata: RequestMetadata,
+    fallback: &RequestMetadata,
+) -> RequestMetadata {
+    if request_metadata.request_name.is_none() {
+        request_metadata.request_name = fallback.request_name.clone();
+    }
+    if request_metadata.folder_path.is_none() {
+        request_metadata.folder_path = fallback.folder_path.clone();
+    }
+
+    request_metadata
+}
+
 /// Simple file-backed storage rooted at a directory.
 /// Data is stored under <base_dir>/<category>/<key>.json
 pub struct FileStorage {
     base_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct StoredDraft {
+    #[serde(flatten)]
+    draft: Draft,
+    #[serde(default)]
+    request_metadata: RequestMetadata,
+}
+
+impl StoredDraft {
+    fn effective_request_metadata(&self) -> RequestMetadata {
+        let mut request_metadata = self.request_metadata.clone();
+        if request_metadata.folder_path.is_none() {
+            request_metadata.folder_path = self.draft.path.clone();
+        }
+
+        request_metadata
+    }
+}
+
+impl From<&Draft> for StoredDraft {
+    fn from(draft: &Draft) -> Self {
+        Self {
+            draft: draft.clone(),
+            request_metadata: RequestMetadata {
+                request_name: None,
+                folder_path: draft.path.clone(),
+            },
+        }
+    }
+}
+
+impl From<StoredDraft> for Draft {
+    fn from(stored_draft: StoredDraft) -> Self {
+        let mut draft = stored_draft.draft;
+        if draft.path.is_none() {
+            draft.path = stored_draft.request_metadata.folder_path;
+        }
+
+        draft
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -73,6 +131,8 @@ struct StoredDraftPreview {
     #[serde(default)]
     workspace_id: Option<String>,
     #[serde(default)]
+    request_metadata: RequestMetadata,
+    #[serde(default)]
     tags: Vec<String>,
     created_at: Option<String>,
 }
@@ -87,6 +147,7 @@ impl From<&DraftPreview> for StoredDraftPreview {
             preview_title: preview.preview_title.clone(),
             preview_snippet: preview.preview_snippet.clone(),
             workspace_id: None,
+            request_metadata: RequestMetadata::default(),
             tags: preview.tags.clone(),
             created_at: preview.created_at.clone(),
         }
@@ -132,6 +193,8 @@ struct StoredSessionState {
     #[serde(default)]
     selected_request: Option<String>,
     #[serde(default)]
+    active_environment: Option<String>,
+    #[serde(default)]
     active_view: Option<String>,
     #[serde(default)]
     open_panels: Vec<String>,
@@ -143,6 +206,7 @@ impl StoredSessionState {
         Self {
             selected_response: None,
             selected_request: None,
+            active_environment: None,
             active_view: None,
             open_panels: Vec::new(),
             updated_at: None,
@@ -155,6 +219,7 @@ impl From<&SessionState> for StoredSessionState {
         Self {
             selected_response: state.selected_response.clone(),
             selected_request: None,
+            active_environment: None,
             active_view: state.active_view.clone(),
             open_panels: state.open_panels.clone(),
             updated_at: state.updated_at.clone(),
@@ -273,6 +338,10 @@ impl FileStorage {
         Ok(keys)
     }
 
+    fn load_stored_draft(&self, id: &str) -> Result<StoredDraft, PersistenceError> {
+        self.read_json("drafts", id)
+    }
+
     fn load_stored_draft_preview(&self, id: &str) -> Result<StoredDraftPreview, PersistenceError> {
         self.read_json("draft_previews", id)
     }
@@ -306,16 +375,51 @@ impl FileStorage {
         Ok(previews)
     }
 
+    fn load_first_stored_draft_preview_for_draft(
+        &self,
+        draft_id: &str,
+    ) -> Result<Option<StoredDraftPreview>, PersistenceError> {
+        for preview in self.load_all_stored_draft_previews()? {
+            if preview.draft_id == draft_id {
+                return Ok(Some(preview));
+            }
+        }
+
+        Ok(None)
+    }
+
     fn load_stored_session_state(&self) -> Result<StoredSessionState, PersistenceError> {
         self.read_json("session", "state")
     }
 
+    fn load_all_environments(&self) -> Result<Vec<Environment>, PersistenceError> {
+        let environment_ids = self.list_environments()?;
+        let mut environments = Vec::with_capacity(environment_ids.len());
+
+        for environment_id in environment_ids {
+            environments.push(self.load_environment(&environment_id)?);
+        }
+
+        Ok(environments)
+    }
+
     /* Draft APIs */
     pub fn save_draft(&self, draft: &Draft) -> Result<(), PersistenceError> {
-        self.write_json("drafts", &draft.id, draft)
+        let existing_request_metadata = match self.load_stored_draft(&draft.id) {
+            Ok(existing_draft) => existing_draft.effective_request_metadata(),
+            Err(PersistenceError::NotFound(_)) => RequestMetadata::default(),
+            Err(error) => return Err(error),
+        };
+        let mut stored_draft = StoredDraft::from(draft);
+        stored_draft.request_metadata = merge_missing_request_metadata(
+            stored_draft.request_metadata,
+            &existing_request_metadata,
+        );
+
+        self.write_json("drafts", &draft.id, &stored_draft)
     }
     pub fn load_draft(&self, id: &str) -> Result<Draft, PersistenceError> {
-        self.read_json("drafts", id)
+        Ok(self.load_stored_draft(id)?.into())
     }
     pub fn delete_draft(&self, id: &str) -> Result<(), PersistenceError> {
         self.delete_json("drafts", id)
@@ -327,17 +431,44 @@ impl FileStorage {
     /* Draft preview APIs */
     pub fn save_draft_preview(&self, preview: &DraftPreview) -> Result<(), PersistenceError> {
         let mut stored_preview = StoredDraftPreview::from(preview);
-        stored_preview.workspace_id = match self.load_draft(&stored_preview.draft_id) {
-            Ok(draft) => draft.workspace_id,
-            Err(PersistenceError::NotFound(_)) => {
-                match self.load_stored_draft_preview(&stored_preview.id) {
-                    Ok(existing_preview) => existing_preview.workspace_id,
-                    Err(PersistenceError::NotFound(_)) => None,
-                    Err(error) => return Err(error),
-                }
-            }
+        let stored_draft = match self.load_stored_draft(&stored_preview.draft_id) {
+            Ok(stored_draft) => Some(stored_draft),
+            Err(PersistenceError::NotFound(_)) => None,
             Err(error) => return Err(error),
         };
+        let existing_preview = match self.load_stored_draft_preview(&stored_preview.id) {
+            Ok(existing_preview) => Some(existing_preview),
+            Err(PersistenceError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+
+        stored_preview.workspace_id = stored_draft
+            .as_ref()
+            .and_then(|stored_draft| stored_draft.draft.workspace_id.clone())
+            .or_else(|| {
+                existing_preview
+                    .as_ref()
+                    .and_then(|existing_preview| existing_preview.workspace_id.clone())
+            });
+        let preview_request_metadata = if let Some(stored_draft) = stored_draft.as_ref() {
+            let draft_request_metadata = stored_draft.effective_request_metadata();
+            if let Some(existing_preview) = existing_preview.as_ref() {
+                merge_missing_request_metadata(
+                    draft_request_metadata,
+                    &existing_preview.request_metadata,
+                )
+            } else {
+                draft_request_metadata
+            }
+        } else if let Some(existing_preview) = existing_preview.as_ref() {
+            existing_preview.request_metadata.clone()
+        } else {
+            RequestMetadata::default()
+        };
+        stored_preview.request_metadata = merge_missing_request_metadata(
+            stored_preview.request_metadata,
+            &preview_request_metadata,
+        );
 
         self.write_json("draft_previews", &preview.id, &stored_preview)
     }
@@ -349,6 +480,63 @@ impl FileStorage {
     }
     pub fn list_draft_previews(&self) -> Result<Vec<String>, PersistenceError> {
         self.list_keys_in_category("draft_previews")
+    }
+    pub fn save_draft_request_metadata(
+        &self,
+        draft_id: &str,
+        request_metadata: &RequestMetadata,
+    ) -> Result<(), PersistenceError> {
+        let mut stored_draft = self.load_stored_draft(draft_id)?;
+        stored_draft.request_metadata = request_metadata.clone();
+        self.write_json("drafts", draft_id, &stored_draft)?;
+
+        for preview_id in self.list_draft_previews()? {
+            let mut stored_preview = self.load_stored_draft_preview(&preview_id)?;
+            if stored_preview.draft_id == draft_id {
+                stored_preview.request_metadata = request_metadata.clone();
+                self.write_json("draft_previews", &preview_id, &stored_preview)?;
+            }
+        }
+
+        Ok(())
+    }
+    pub fn load_draft_request_metadata(
+        &self,
+        draft_id: &str,
+    ) -> Result<RequestMetadata, PersistenceError> {
+        let stored_draft = match self.load_stored_draft(draft_id) {
+            Ok(stored_draft) => Some(stored_draft),
+            Err(PersistenceError::NotFound(_)) => None,
+            Err(error) => return Err(error),
+        };
+        let stored_preview = self.load_first_stored_draft_preview_for_draft(draft_id)?;
+
+        if stored_draft.is_none() && stored_preview.is_none() {
+            return Err(PersistenceError::NotFound(format!(
+                "draft metadata not found for {draft_id}"
+            )));
+        }
+
+        let mut request_metadata = if let Some(stored_draft) = stored_draft.as_ref() {
+            stored_draft.effective_request_metadata()
+        } else {
+            RequestMetadata::default()
+        };
+
+        if let Some(preview) = stored_preview {
+            request_metadata = merge_missing_request_metadata(
+                request_metadata,
+                &merge_missing_request_metadata(
+                    preview.request_metadata,
+                    &RequestMetadata {
+                        request_name: preview.preview_title,
+                        folder_path: None,
+                    },
+                ),
+            );
+        }
+
+        Ok(request_metadata)
     }
     pub fn load_drafts_for_workspace(
         &self,
@@ -432,6 +620,48 @@ impl FileStorage {
         self.list_keys_in_category("workspace_snapshots")
     }
 
+    /* Environment APIs */
+    pub fn save_environment(&self, environment: &Environment) -> Result<(), PersistenceError> {
+        self.write_json("environments", &environment.id, environment)
+    }
+    pub fn load_environment(&self, id: &str) -> Result<Environment, PersistenceError> {
+        self.read_json("environments", id)
+    }
+    pub fn delete_environment(&self, id: &str) -> Result<(), PersistenceError> {
+        self.delete_json("environments", id)
+    }
+    pub fn list_environments(&self) -> Result<Vec<String>, PersistenceError> {
+        self.list_keys_in_category("environments")
+    }
+    pub fn save_environment_snapshot(
+        &self,
+        snapshot: &EnvironmentSnapshot,
+    ) -> Result<(), PersistenceError> {
+        let desired_environment_ids: HashSet<&str> = snapshot
+            .environments
+            .iter()
+            .map(|environment| environment.id.as_str())
+            .collect();
+
+        for environment in &snapshot.environments {
+            self.save_environment(environment)?;
+        }
+
+        for existing_environment_id in self.list_environments()? {
+            if !desired_environment_ids.contains(existing_environment_id.as_str()) {
+                self.delete_environment(&existing_environment_id)?;
+            }
+        }
+
+        self.save_active_environment(snapshot.active_environment.as_deref())
+    }
+    pub fn load_environment_snapshot(&self) -> Result<EnvironmentSnapshot, PersistenceError> {
+        Ok(EnvironmentSnapshot {
+            active_environment: self.load_active_environment()?,
+            environments: self.load_all_environments()?,
+        })
+    }
+
     /* Response summary APIs */
     pub fn save_response_summary(&self, summary: &ResponseSummary) -> Result<(), PersistenceError> {
         self.write_json("responses", &summary.id, summary)
@@ -496,11 +726,14 @@ impl FileStorage {
     /* Session-level UI state (richer) */
     pub fn save_session_state(&self, state: &SessionState) -> Result<(), PersistenceError> {
         let mut stored_state = StoredSessionState::from(state);
-        stored_state.selected_request = match self.load_stored_session_state() {
-            Ok(existing_state) => existing_state.selected_request,
-            Err(PersistenceError::NotFound(_)) => None,
+        match self.load_stored_session_state() {
+            Ok(existing_state) => {
+                stored_state.selected_request = existing_state.selected_request;
+                stored_state.active_environment = existing_state.active_environment;
+            }
+            Err(PersistenceError::NotFound(_)) => {}
             Err(error) => return Err(error),
-        };
+        }
 
         self.write_json("session", "state", &stored_state)
     }
@@ -523,6 +756,27 @@ impl FileStorage {
     pub fn load_selected_request(&self) -> Result<Option<String>, PersistenceError> {
         Ok(self.load_stored_session_state()?.selected_request)
     }
+    pub fn save_active_environment(
+        &self,
+        active_environment: Option<&str>,
+    ) -> Result<(), PersistenceError> {
+        let mut stored_state = match self.load_stored_session_state() {
+            Ok(existing_state) => existing_state,
+            Err(PersistenceError::NotFound(_)) => StoredSessionState::empty(),
+            Err(error) => return Err(error),
+        };
+        stored_state.active_environment =
+            active_environment.map(|environment| environment.to_owned());
+
+        self.write_json("session", "state", &stored_state)
+    }
+    pub fn load_active_environment(&self) -> Result<Option<String>, PersistenceError> {
+        match self.load_stored_session_state() {
+            Ok(state) => Ok(state.active_environment),
+            Err(PersistenceError::NotFound(_)) => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
 }
 
 impl std::fmt::Display for PersistenceError {
@@ -544,7 +798,8 @@ impl std::error::Error for PersistenceError {}
 mod tests {
     use super::FileStorage;
     use crate::persistence::models::{
-        Draft, DraftPreview, HeaderEntry, ResponsePreview, ResponsePreviewDetail, SessionState,
+        Draft, DraftPreview, Environment, EnvironmentEntry, EnvironmentSnapshot, HeaderEntry,
+        RequestMetadata, ResponsePreview, ResponsePreviewDetail, SessionState,
     };
     use std::fs;
     use std::path::PathBuf;
@@ -656,6 +911,138 @@ mod tests {
             Err(error) => panic!("failed to list remaining previews: {error}"),
         };
         assert_eq!(remaining_previews, vec!["preview-two".to_owned()]);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn draft_request_metadata_round_trips_and_survives_draft_updates() {
+        let storage_path = unique_storage_path("draft-request-metadata");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let draft = Draft {
+            id: "draft-one".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            path: None,
+            content: "GET https://example.com/items".to_owned(),
+            created_at: None,
+            tags: vec!["request".to_owned()],
+        };
+        let preview = DraftPreview {
+            id: "preview-one".to_owned(),
+            draft_id: draft.id.clone(),
+            method: Some("GET".to_owned()),
+            target_url: Some("https://example.com/items".to_owned()),
+            preview_title: Some("temporary title".to_owned()),
+            preview_snippet: None,
+            tags: vec!["request".to_owned()],
+            created_at: None,
+        };
+
+        if let Err(error) = storage.save_draft(&draft) {
+            panic!("failed to save draft: {error}");
+        }
+        if let Err(error) = storage.save_draft_preview(&preview) {
+            panic!("failed to save draft preview: {error}");
+        }
+
+        let request_metadata = RequestMetadata {
+            request_name: Some("List items".to_owned()),
+            folder_path: Some("Collections/API".to_owned()),
+        };
+        if let Err(error) = storage.save_draft_request_metadata(&draft.id, &request_metadata) {
+            panic!("failed to save draft request metadata: {error}");
+        }
+
+        let loaded_request_metadata = match storage.load_draft_request_metadata(&draft.id) {
+            Ok(request_metadata) => request_metadata,
+            Err(error) => panic!("failed to load draft request metadata: {error}"),
+        };
+        assert_eq!(loaded_request_metadata, request_metadata);
+
+        let loaded_draft = match storage.load_draft(&draft.id) {
+            Ok(draft) => draft,
+            Err(error) => panic!("failed to load draft: {error}"),
+        };
+        assert_eq!(loaded_draft.path.as_deref(), Some("Collections/API"));
+
+        let updated_draft = Draft {
+            content: "POST https://example.com/items".to_owned(),
+            ..draft.clone()
+        };
+        if let Err(error) = storage.save_draft(&updated_draft) {
+            panic!("failed to update draft: {error}");
+        }
+
+        let updated_preview = DraftPreview {
+            preview_title: Some("changed title".to_owned()),
+            ..preview.clone()
+        };
+        if let Err(error) = storage.save_draft_preview(&updated_preview) {
+            panic!("failed to update draft preview: {error}");
+        }
+
+        let preserved_request_metadata = match storage.load_draft_request_metadata(&draft.id) {
+            Ok(request_metadata) => request_metadata,
+            Err(error) => panic!("failed to reload draft request metadata: {error}"),
+        };
+        assert_eq!(preserved_request_metadata, request_metadata);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn legacy_draft_fields_backfill_request_metadata() {
+        let storage_path = unique_storage_path("legacy-draft-request-metadata");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let draft = Draft {
+            id: "draft-legacy".to_owned(),
+            workspace_id: Some("workspace-a".to_owned()),
+            path: Some("Collections/Legacy".to_owned()),
+            content: "GET https://example.com/legacy".to_owned(),
+            created_at: None,
+            tags: vec!["request".to_owned()],
+        };
+        let preview = DraftPreview {
+            id: "preview-legacy".to_owned(),
+            draft_id: draft.id.clone(),
+            method: Some("GET".to_owned()),
+            target_url: Some("https://example.com/legacy".to_owned()),
+            preview_title: Some("Legacy request".to_owned()),
+            preview_snippet: None,
+            tags: vec!["request".to_owned()],
+            created_at: None,
+        };
+
+        if let Err(error) = storage.write_json("drafts", &draft.id, &draft) {
+            panic!("failed to write legacy draft: {error}");
+        }
+        if let Err(error) = storage.write_json("draft_previews", &preview.id, &preview) {
+            panic!("failed to write legacy draft preview: {error}");
+        }
+
+        let loaded_request_metadata = match storage.load_draft_request_metadata(&draft.id) {
+            Ok(request_metadata) => request_metadata,
+            Err(error) => panic!("failed to load legacy draft request metadata: {error}"),
+        };
+        assert_eq!(
+            loaded_request_metadata,
+            RequestMetadata {
+                request_name: Some("Legacy request".to_owned()),
+                folder_path: Some("Collections/Legacy".to_owned()),
+            }
+        );
 
         if let Err(error) = fs::remove_dir_all(&storage_path) {
             panic!("failed to clean up test storage directory: {error}");
@@ -863,6 +1250,166 @@ mod tests {
         };
         assert!(loaded_detail.request_headers.is_empty());
         assert!(loaded_detail.response_headers.is_empty());
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn environment_helpers_round_trip_records_and_active_selection() {
+        let storage_path = unique_storage_path("environment-helpers");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let first_environment = Environment {
+            id: "local".to_owned(),
+            name: "Local".to_owned(),
+            entries: vec![
+                EnvironmentEntry {
+                    key: "base_url".to_owned(),
+                    value: "http://localhost:3000".to_owned(),
+                },
+                EnvironmentEntry {
+                    key: "token".to_owned(),
+                    value: "dev-token".to_owned(),
+                },
+            ],
+        };
+        let second_environment = Environment {
+            id: "staging".to_owned(),
+            name: "Staging".to_owned(),
+            entries: vec![EnvironmentEntry {
+                key: "base_url".to_owned(),
+                value: "https://staging.example.com".to_owned(),
+            }],
+        };
+
+        if let Err(error) = storage.save_environment(&first_environment) {
+            panic!("failed to save first environment: {error}");
+        }
+        if let Err(error) = storage.save_environment(&second_environment) {
+            panic!("failed to save second environment: {error}");
+        }
+        if let Err(error) = storage.save_active_environment(Some("staging")) {
+            panic!("failed to save active environment: {error}");
+        }
+
+        let environment_ids = match storage.list_environments() {
+            Ok(environment_ids) => environment_ids,
+            Err(error) => panic!("failed to list environments: {error}"),
+        };
+        assert_eq!(
+            environment_ids,
+            vec!["local".to_owned(), "staging".to_owned()]
+        );
+
+        let loaded_environment = match storage.load_environment("local") {
+            Ok(environment) => environment,
+            Err(error) => panic!("failed to load environment: {error}"),
+        };
+        assert_eq!(loaded_environment, first_environment);
+
+        let active_environment = match storage.load_active_environment() {
+            Ok(active_environment) => active_environment,
+            Err(error) => panic!("failed to load active environment: {error}"),
+        };
+        assert_eq!(active_environment.as_deref(), Some("staging"));
+
+        if let Err(error) = storage.delete_environment("local") {
+            panic!("failed to delete environment: {error}");
+        }
+
+        let remaining_environment_ids = match storage.list_environments() {
+            Ok(environment_ids) => environment_ids,
+            Err(error) => panic!("failed to list environments after delete: {error}"),
+        };
+        assert_eq!(remaining_environment_ids, vec!["staging".to_owned()]);
+
+        if let Err(error) = fs::remove_dir_all(&storage_path) {
+            panic!("failed to clean up test storage directory: {error}");
+        }
+    }
+
+    #[test]
+    fn environment_snapshot_replaces_records_and_preserves_session_state() {
+        let storage_path = unique_storage_path("environment-snapshot");
+        let storage = match FileStorage::new(&storage_path) {
+            Ok(storage) => storage,
+            Err(error) => panic!("failed to create file storage: {error}"),
+        };
+
+        let session_state = SessionState {
+            selected_response: Some("response-5".to_owned()),
+            active_view: Some("Request".to_owned()),
+            open_panels: vec!["sidebar".to_owned()],
+            updated_at: Some("2026-02-01T00:00:00Z".to_owned()),
+        };
+        if let Err(error) = storage.save_session_state(&session_state) {
+            panic!("failed to save session state: {error}");
+        }
+
+        let legacy_environment = Environment {
+            id: "legacy".to_owned(),
+            name: "Legacy".to_owned(),
+            entries: vec![EnvironmentEntry {
+                key: "base_url".to_owned(),
+                value: "https://legacy.example.com".to_owned(),
+            }],
+        };
+        if let Err(error) = storage.save_environment(&legacy_environment) {
+            panic!("failed to save legacy environment: {error}");
+        }
+
+        let snapshot = EnvironmentSnapshot {
+            active_environment: Some("prod".to_owned()),
+            environments: vec![
+                Environment {
+                    id: "dev".to_owned(),
+                    name: "Development".to_owned(),
+                    entries: vec![EnvironmentEntry {
+                        key: "base_url".to_owned(),
+                        value: "http://localhost:4000".to_owned(),
+                    }],
+                },
+                Environment {
+                    id: "prod".to_owned(),
+                    name: "Production".to_owned(),
+                    entries: vec![EnvironmentEntry {
+                        key: "base_url".to_owned(),
+                        value: "https://api.example.com".to_owned(),
+                    }],
+                },
+            ],
+        };
+
+        if let Err(error) = storage.save_environment_snapshot(&snapshot) {
+            panic!("failed to save environment snapshot: {error}");
+        }
+
+        let loaded_snapshot = match storage.load_environment_snapshot() {
+            Ok(snapshot) => snapshot,
+            Err(error) => panic!("failed to load environment snapshot: {error}"),
+        };
+        assert_eq!(loaded_snapshot, snapshot);
+
+        let environment_ids = match storage.list_environments() {
+            Ok(environment_ids) => environment_ids,
+            Err(error) => panic!("failed to list environments after snapshot save: {error}"),
+        };
+        assert_eq!(environment_ids, vec!["dev".to_owned(), "prod".to_owned()]);
+
+        let loaded_session_state = match storage.load_session_state() {
+            Ok(state) => state,
+            Err(error) => panic!("failed to reload session state: {error}"),
+        };
+        assert_eq!(
+            loaded_session_state.selected_response.as_deref(),
+            Some("response-5")
+        );
+        assert_eq!(loaded_session_state.active_view.as_deref(), Some("Request"));
 
         if let Err(error) = fs::remove_dir_all(&storage_path) {
             panic!("failed to clean up test storage directory: {error}");

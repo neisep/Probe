@@ -7,17 +7,18 @@
     "History"
   ],
   "drafts": [
-    "selected_request"
+    "request-0"
   ],
   "responses": [
     "response-0",
     "response-1",
-    "response-2"
+    "response-2",
+    "response-3"
   ],
   "meta": {
     "request_count": 1,
-    "response_count": 3,
+    "response_count": 4,
     "selected_request": 0,
-    "selected_response": 2
+    "selected_response": 3
   }
 }
