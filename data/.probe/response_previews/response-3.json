@@ -1,0 +1,112 @@
+{
+  "id": "response-3",
+  "response_id": "response-3",
+  "summary": "HTTP 200",
+  "request_method": "GET",
+  "request_url": "https://www.neisep.com",
+  "content_preview": "<!doctype html><html lang=en-us><head><title>NeiSep</title>\n<meta charset=utf-8><meta name=generator content=\"Hugo 0.124.1\"><meta name=viewport content=\"width=device-width,initial-scale=1\"><meta name=author content=\"Jimmie Jönsson\"><meta name=description content=\"C# Developer and a Geek\"><link rel=stylesheet href=/css/main.min.59023e5fd38d6ecb0e1dfbb295077c3c67e00e3b9eb3feaf34b5a5e6b332897a.css><m",
+  "content_body": "<!doctype html><html lang=en-us><head><title>NeiSep</title>\n<meta charset=utf-8><meta name=generator content=\"Hugo 0.124.1\"><meta name=viewport content=\"width=device-width,initial-scale=1\"><meta name=author content=\"Jimmie Jönsson\"><meta name=description content=\"C# Developer and a Geek\"><link rel=stylesheet href=/css/main.min.59023e5fd38d6ecb0e1dfbb295077c3c67e00e3b9eb3feaf34b5a5e6b332897a.css><meta name=twitter:card content=\"summary\"><meta name=twitter:title content=\"NeiSep\"><meta name=twitter:description content=\"C# Developer and a Geek\"><meta property=\"og:title\" content=\"NeiSep\"><meta property=\"og:description\" content=\"C# Developer and a Geek\"><meta property=\"og:type\" content=\"website\"><meta property=\"og:url\" content=\"/\"></head><body><header class=app-header><a href=/><img class=app-header-avatar src=/avatar.jpg alt=\"Jimmie Jönsson\"></a><h1>NeiSep</h1><p>C# Developer and a Geek</p><div class=app-header-social><a target=_blank href=https://github.com/neisep rel=\"noreferrer noopener\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-github\"><title>github</title><path d=\"M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37.0 00-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44.0 0020 4.77 5.07 5.07.0 0019.91 1S18.73.65 16 2.48a13.38 13.38.0 00-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07.0 005 4.77 5.44 5.44.0 003.5 8.55c0 5.42 3.3 6.61 6.44 7A3.37 3.37.0 009 18.13V22\"/></svg></a>\n<a target=_blank href=https://www.linkedin.com/in/jimmiejonsson rel=\"noreferrer noopener\"><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-linkedin\"><title>linkedin</title><path d=\"M16 8a6 6 0 016 6v7h-4v-7a2 2 0 00-2-2 2 2 0 00-2 2v7h-4v-7a6 6 0 016-6z\"/><rect x=\"2\" y=\"9\" width=\"4\" height=\"12\"/><circle cx=\"4\" cy=\"4\" r=\"2\"/></svg></a></div></header><main class=app-container><article><h1>NeiSep</h1><ul class=posts-list><li class=posts-list-item><a class=posts-list-item-title href=/posts/why-i-like-stringbuilder/>Why i like StringBuilder</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nOct 21, 2020</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/en-guide-till-ean-koder-del-2/>En Guide Till Ean Koder Del 2</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nMar 9, 2019</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/en-guide-till-ean-koder-del-1/>En Guide Till Ean Koder Del 1</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 2 min read -\nFeb 25, 2019</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/norway/>Norway</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 2 min read -\nDec 16, 2018</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/anything-new-yet-no/>Anything New Yet No</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nJul 21, 2018</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/how-too-use-tasks-and-progressbar-in-net/>How Too Use Tasks and Progressbar in Net</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 2 min read -\nNov 17, 2017</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/working-on-a-small-utility-to-push-emails-to-apis/>Working on a Small Utility to Push Emails to Apis</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nAug 26, 2017</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/who-remember-fasttracker-2/>Who Remember Fasttracker 2</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nMay 22, 2017</span></li><li class=posts-list-item><a class=posts-list-item-title href=/posts/c-relay-server/>C# Relay Server</a>\n<span class=posts-list-item-description><svg xmlns=\"http://www.w3.org/2000/svg\" width=\"24\" height=\"24\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentcolor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" class=\"icon icon-clock\"><title>clock</title><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg> 1 min read -\nMay 22, 2017</span></li></ul></article></main></body></html>",
+  "content_type": "text/html; charset=utf-8",
+  "header_count": 22,
+  "size_bytes": 6697,
+  "tags": [],
+  "created_at": null,
+  "detail": {
+    "request_headers": [
+      {
+        "name": "client",
+        "value": "Probe"
+      }
+    ],
+    "response_headers": [
+      {
+        "name": "connection",
+        "value": "keep-alive"
+      },
+      {
+        "name": "content-length",
+        "value": "6697"
+      },
+      {
+        "name": "server",
+        "value": "GitHub.com"
+      },
+      {
+        "name": "content-type",
+        "value": "text/html; charset=utf-8"
+      },
+      {
+        "name": "last-modified",
+        "value": "Sun, 14 Apr 2024 18:32:56 GMT"
+      },
+      {
+        "name": "access-control-allow-origin",
+        "value": "*"
+      },
+      {
+        "name": "strict-transport-security",
+        "value": "max-age=31556952"
+      },
+      {
+        "name": "etag",
+        "value": "\"661c2158-1a29\""
+      },
+      {
+        "name": "expires",
+        "value": "Sun, 19 Apr 2026 11:11:36 GMT"
+      },
+      {
+        "name": "cache-control",
+        "value": "max-age=600"
+      },
+      {
+        "name": "x-proxy-cache",
+        "value": "MISS"
+      },
+      {
+        "name": "x-github-request-id",
+        "value": "9606:1A5512:3033049:30ABF86:69E4B60F"
+      },
+      {
+        "name": "accept-ranges",
+        "value": "bytes"
+      },
+      {
+        "name": "age",
+        "value": "0"
+      },
+      {
+        "name": "date",
+        "value": "Sun, 19 Apr 2026 11:01:37 GMT"
+      },
+      {
+        "name": "via",
+        "value": "1.1 varnish"
+      },
+      {
+        "name": "x-served-by",
+        "value": "cache-cph2320043-CPH"
+      },
+      {
+        "name": "x-cache",
+        "value": "MISS"
+      },
+      {
+        "name": "x-cache-hits",
+        "value": "0"
+      },
+      {
+        "name": "x-timer",
+        "value": "S1776596497.896782,VS0,VE133"
+      },
+      {
+        "name": "vary",
+        "value": "Accept-Encoding"
+      },
+      {
+        "name": "x-fastly-request-id",
+        "value": "a9a398e3e1fbb71e4e324a0f6717f71524a6f1ca"
+      }
+    ]
+  }
+}

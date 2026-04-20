@@ -1,0 +1,18 @@
+{
+  "id": "response-0",
+  "response_id": "response-0",
+  "summary": "No response yet",
+  "request_method": null,
+  "request_url": null,
+  "content_preview": null,
+  "content_body": null,
+  "content_type": null,
+  "header_count": null,
+  "size_bytes": null,
+  "tags": [],
+  "created_at": null,
+  "detail": {
+    "request_headers": [],
+    "response_headers": []
+  }
+}
