@@ -6,10 +6,15 @@ edition = "2024"
 [dependencies]
 base64 = "0.22.1"
 eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
+oauth2 = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
+rand = "0.8"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json"] }
 rfd = "0.15.4"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
-tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+tokio = { version = "1.52.1", features = ["rt-multi-thread", "macros", "sync", "time", "io-util", "net"] }
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2"
+webbrowser = "1"

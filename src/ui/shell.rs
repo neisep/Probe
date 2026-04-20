@@ -43,6 +43,10 @@ fn show_settings_window(ctx: &egui::Context, state: &mut AppState) {
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
                     environment_editor::show_sidebar_section(ui, state);
+                    ui.add_space(10.0);
+                    ui.separator();
+                    ui.add_space(6.0);
+                    environment_editor::show_request_section(ui, state);
                 });
         });
 

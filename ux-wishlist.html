@@ -1,0 +1,640 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Probe — UX Wishlist</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root {
+    --bg: #0f1115;
+    --panel: #171a21;
+    --panel-2: #1d212b;
+    --border: #262b36;
+    --text: #e7e9ee;
+    --muted: #8b93a3;
+    --accent: #7ab7ff;
+    --accent-2: #a78bfa;
+    --ok: #4ade80;
+    --warn: #fbbf24;
+    --hot: #f87171;
+    --chip: #2a3040;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Inter, system-ui, sans-serif; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header { padding: 20px 24px 12px; border-bottom: 1px solid var(--border); position: sticky; top: 0; background: var(--bg); z-index: 10; }
+  header h1 { margin: 0 0 4px; font-size: 22px; font-weight: 600; }
+  header p { margin: 0; color: var(--muted); font-size: 13px; }
+  .stats { display: flex; gap: 18px; margin-top: 12px; flex-wrap: wrap; font-size: 12px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; }
+
+  .toolbar { display: flex; gap: 10px; padding: 12px 24px; border-bottom: 1px solid var(--border); flex-wrap: wrap; background: var(--panel); position: sticky; top: 92px; z-index: 9; }
+  .toolbar input, .toolbar select { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 10px; font-size: 13px; }
+  .toolbar input[type="search"] { min-width: 280px; }
+  .toolbar label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+  .toolbar .spacer { flex: 1; }
+  .toolbar button { background: var(--chip); color: var(--text); border: 1px solid var(--border); border-radius: 6px; padding: 7px 12px; cursor: pointer; font-size: 12px; }
+  .toolbar button:hover { background: #323a4e; }
+
+  main { padding: 18px 24px 60px; }
+
+  table { width: 100%; border-collapse: collapse; }
+  thead th { position: sticky; top: 148px; background: var(--panel); color: var(--muted); text-align: left; font-weight: 600; font-size: 11px; letter-spacing: 0.05em; text-transform: uppercase; padding: 10px 10px; border-bottom: 1px solid var(--border); cursor: pointer; user-select: none; z-index: 8; }
+  thead th.sortable::after { content: " ↕"; opacity: 0.3; font-size: 10px; }
+  thead th.sort-asc::after  { content: " ↑"; opacity: 1; color: var(--accent); }
+  thead th.sort-desc::after { content: " ↓"; opacity: 1; color: var(--accent); }
+  tbody tr { border-bottom: 1px solid var(--border); }
+  tbody tr:hover { background: var(--panel); }
+  tbody td { padding: 12px 10px; vertical-align: top; }
+  tbody td.num { font-variant-numeric: tabular-nums; white-space: nowrap; }
+  tbody tr.expanded { background: var(--panel); }
+  tbody tr.expanded td { border-bottom: none; }
+  tr.detail td { background: var(--panel-2); padding: 14px 18px 18px 42px; font-size: 13px; color: #cdd3df; }
+  tr.detail b { color: var(--text); }
+
+  .title { font-weight: 600; color: var(--text); }
+  .caret { display: inline-block; width: 14px; color: var(--muted); cursor: pointer; user-select: none; }
+
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 11px; font-weight: 600; border: 1px solid var(--border); background: var(--chip); color: var(--text); white-space: nowrap; }
+  .chip.t0 { background: #3a1a1a; color: #fecaca; border-color: #5a2424; }
+  .chip.t1 { background: #3a2a14; color: #fde68a; border-color: #5a3e20; }
+  .chip.t2 { background: #1a2e3a; color: #bae6fd; border-color: #24445a; }
+  .chip.t3 { background: #1a2a3a; color: #c7d2fe; border-color: #243a5a; }
+  .chip.t4 { background: #1a3a2a; color: #bbf7d0; border-color: #245a3a; }
+  .chip.t5 { background: #2a1a3a; color: #e9d5ff; border-color: #3e245a; }
+  .chip.t6 { background: #26262b; color: #d1d5db; border-color: #3a3a44; }
+
+  .chip.open { background: #14301f; color: #6ee7b7; border-color: #1f4a30; }
+  .chip.closed { background: #2b2b30; color: var(--muted); border-color: var(--border); }
+
+  .category { color: var(--muted); font-size: 12px; }
+  .upvotes { color: var(--accent); font-weight: 600; }
+  .upvotes.high { color: var(--hot); }
+  .upvotes.mid { color: var(--warn); }
+
+  .legend { padding: 12px 24px; background: var(--panel); border-bottom: 1px solid var(--border); font-size: 12px; color: var(--muted); display: flex; gap: 14px; flex-wrap: wrap; align-items: center; }
+
+  .phase-box { margin: 16px 0 24px; padding: 14px 18px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  .phase-box h2 { margin: 0 0 8px; font-size: 15px; }
+  .phase-box ol { margin: 0; padding-left: 22px; }
+  .phase-box li { margin-bottom: 4px; }
+  .pill { display: inline-block; padding: 1px 6px; border-radius: 4px; background: var(--chip); font-size: 11px; color: var(--accent); margin-right: 4px; font-variant-numeric: tabular-nums; }
+
+  footer { padding: 20px 24px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border); }
+  code { background: var(--panel-2); padding: 1px 5px; border-radius: 3px; font-size: 12px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Probe — UX wishlist</h1>
+  <p>What Postman customers want, what Bruno users keep asking for, filtered through a native Rust + egui client lens.</p>
+  <div class="stats">
+    <span><b id="count-total">0</b> features</span>
+    <span><b id="count-open">0</b> still open in Bruno</span>
+    <span><b id="count-upvotes">0</b> total 👍 across referenced issues</span>
+    <span>Data pulled <b>2026-04-19</b> via <code>gh issue list --repo usebruno/bruno --search "sort:reactions-+1"</code></span>
+  </div>
+</header>
+
+<div class="toolbar">
+  <input type="search" id="search" placeholder="Search title, reason, category…" autocomplete="off">
+  <label>Tier
+    <select id="filter-tier">
+      <option value="">All</option>
+      <option value="0">0 — Why switch</option>
+      <option value="1">1 — Auth & protocols</option>
+      <option value="2">2 — Import / interop</option>
+      <option value="3">3 — Vars & envs</option>
+      <option value="4">4 — Organization</option>
+      <option value="5">5 — Power-user / keyboard</option>
+      <option value="6">6 — Plumbing</option>
+    </select>
+  </label>
+  <label>Category
+    <select id="filter-category"><option value="">All</option></select>
+  </label>
+  <label>Bruno status
+    <select id="filter-status">
+      <option value="">All</option>
+      <option value="open">Still open</option>
+      <option value="closed">Closed / shipped</option>
+    </select>
+  </label>
+  <label>Min 👍
+    <input type="number" id="filter-min" min="0" step="5" value="0" style="width: 70px;">
+  </label>
+  <div class="spacer"></div>
+  <button id="expand-all">Expand all</button>
+  <button id="collapse-all">Collapse all</button>
+  <button id="reset">Reset</button>
+</div>
+
+<div class="legend">
+  <span><span class="chip t0">T0</span> Why switch at all</span>
+  <span><span class="chip t1">T1</span> Auth & protocols</span>
+  <span><span class="chip t2">T2</span> Import / interop</span>
+  <span><span class="chip t3">T3</span> Vars & envs</span>
+  <span><span class="chip t4">T4</span> Organization</span>
+  <span><span class="chip t5">T5</span> Power-user / keyboard</span>
+  <span><span class="chip t6">T6</span> Plumbing</span>
+  <span style="margin-left:auto;"><span class="chip open">open</span> still unsolved in Bruno = <b style="color:var(--ok)">opportunity</b></span>
+</div>
+
+<main>
+  <table id="tbl">
+    <thead>
+      <tr>
+        <th style="width:26px"></th>
+        <th class="sortable" data-sort="tier">Tier</th>
+        <th class="sortable" data-sort="title">Feature</th>
+        <th class="sortable" data-sort="category">Category</th>
+        <th class="sortable sort-desc" data-sort="upvotes">👍 top issue</th>
+        <th class="sortable" data-sort="totalUpvotes">👍 total</th>
+        <th>Bruno issues</th>
+        <th class="sortable" data-sort="status">Status</th>
+      </tr>
+    </thead>
+    <tbody id="rows"></tbody>
+  </table>
+
+  <div class="phase-box">
+    <h2>If you only build five things this quarter</h2>
+    <ol>
+      <li><span class="pill">T1</span> OAuth 2.0 done right — system browser, PKCE, Client Creds, per-env token cache, reset-token button.</li>
+      <li><span class="pill">T2</span> OpenAPI 2.x + 3.x import (merge, don't clobber).</li>
+      <li><span class="pill">T3</span> Prompt-for-variable at send time, with dropdown of prior values.</li>
+      <li><span class="pill">T0</span> Save &amp; restore workspace across launches (tabs, env, splits, drafts).</li>
+      <li><span class="pill">T0</span> <code>.http</code> file compatibility (VSCode REST Client / JetBrains).</li>
+    </ol>
+  </div>
+
+  <div class="phase-box">
+    <h2>Shipping order</h2>
+    <ol>
+      <li><b>Phase 1 — MVP polish:</b> T0 offline/autosave/workspace-restore, OAuth2 (Client Creds + Auth Code + PKCE), OpenAPI import, cURL paste, prompt-variable, var autocomplete, drag-drop folders, path params, save response examples, Vim mode.</li>
+      <li><b>Phase 2 — Pro-ready:</b> Inherit auth w/ override, WebSocket + SSE, HAR import, Postman/Insomnia import, nested envs, recursive vars, reorder env vars, collection-level scripts, configurable shortcuts, plugin API, auto-updater, URL-encode params, perf/load CLI.</li>
+      <li><b>Phase 3 — Differentiators:</b> gRPC, MCP client + server, same-named requests, <code>bru.run()</code> orchestration, multipart file vars, SSH/SOCKS5 proxy, HTML doc gen, i18n.</li>
+    </ol>
+  </div>
+
+  <div class="phase-box">
+    <h2>egui-specific UX notes</h2>
+    <ul style="margin:0; padding-left:22px;">
+      <li><b>Platform shortcuts must work:</b> Ctrl/Cmd+S, Ctrl+W, Ctrl+T, Ctrl+L — egui apps routinely break these.</li>
+      <li><b>Bundle a real monospace font</b> (JetBrains Mono, Fira Code). egui's default font ruins JSON readability.</li>
+      <li><b>Every split boundary persists</b> across launches (Bruno #635 is literally this complaint).</li>
+      <li><b>Virtualize long lists</b> — sidebar, history, large JSON. <code>ScrollArea</code> handles this but it's easy to forget.</li>
+      <li><b>Latency is the marketing.</b> Publish cold-start and send-to-first-byte numbers vs Electron competitors.</li>
+      <li><b>Accessibility:</b> test with a screen reader before release — egui's a11y story is weaker than native, so be deliberate.</li>
+    </ul>
+  </div>
+</main>
+
+<footer>
+  Sources: Bruno GitHub issues sorted by 👍 reactions · Postman blog + user reviews · tallied 2026-04-19.
+</footer>
+
+<script>
+const DATA = [
+  // Tier 0
+  { id: 1, tier: 0, category: "Offline / trust", title: "Real offline-first, no account, no telemetry by default",
+    why: "Postman removed Scratch Pad in 2023 (cloud login required) and in March 2026 capped the free plan at a single user. Air-gapped / compliance teams are actively migrating. Bruno users still ask for an explicit telemetry-off switch.",
+    rec: "Never phone home. Local files only. If anything is ever added, explicit opt-in, visible in settings.",
+    issues: [{n: 337, up: 34, state: "open", t: "Disable telemetry option"}] },
+
+  { id: 2, tier: 0, category: "Storage", title: "Plain-text, git-diffable collection format",
+    why: "Bruno's entire growth wedge is `.bru` files in a git repo. Probe already stores JSON under `data/` — make the on-disk schema human-readable, stable, and documented as the source of truth.",
+    rec: "Freeze a documented file format early. Publish a schema. Make sure diffs during review read well.",
+    issues: [] },
+
+  { id: 3, tier: 0, category: "Interop", title: ".http file compatibility (VSCode REST Client / JetBrains)",
+    why: "Users want the same file to open in their editor and in the GUI. Third-most-voted open issue in all of Bruno.",
+    rec: "Treat .http as a first-class input/output format alongside the native one.",
+    issues: [{n: 1537, up: 76, state: "open", t: "Support for http files (VSCode REST Client / IntelliJ HTTP Client)"}] },
+
+  { id: 4, tier: 0, category: "Persistence", title: "Save & restore workspace across launches",
+    why: "Single most consistent complaint across Postman and Bruno. Open tabs, last environment, sidebar widths, scroll positions, unsaved drafts — everything survives crash/quit.",
+    rec: "Serialize UI state on every change. Restore on open. Zero \"did you mean to close?\" dialogs.",
+    issues: [
+      {n: 565, up: 44, state: "open", t: "Save/restore workspace on close/open app"},
+      {n: 411, up: 36, state: "closed", t: "save request/response history (including between launches)"},
+      {n: 1598, up: 29, state: "closed", t: "Last selected environment not persisted across startups"},
+      {n: 6883, up: 14, state: "open", t: "Open most-recently-used workspace on launch"},
+      {n: 635, up: 12, state: "open", t: "Persist sidebar width across restarts"}
+    ] },
+
+  { id: 5, tier: 0, category: "Persistence", title: "Auto-save drafts — no \"unsaved changes\" modals",
+    why: "Modal save dialogs are a rage-trigger. Bruno #142 and #2919 are both squarely about this.",
+    rec: "Everything is persisted. Saved vs draft is a visual diff, never a blocking dialog.",
+    issues: [
+      {n: 142, up: 40, state: "closed", t: "Auto Save Changes to request"},
+      {n: 2919, up: 30, state: "closed", t: "Draft request"}
+    ] },
+
+  // Tier 1 — Auth & protocols
+  { id: 10, tier: 1, category: "Auth", title: "OAuth 2.0 — done correctly",
+    why: "#1 most-upvoted Bruno issue ever. Users stayed on Postman specifically because of OAuth2. Key missing bits: system-browser flow, token reset per env, extra token-request params, ID-vs-access-token selection.",
+    rec: "Support Authorization Code + PKCE, Client Credentials, Device Code, Refresh. Open the system browser (not an embedded webview). Per-environment token cache. Explicit \"reset token\" button. Configurable auth header name.",
+    issues: [
+      {n: 1003, up: 122, state: "closed", t: "Auth: OAuth 2.0"},
+      {n: 1999, up: 60, state: "closed", t: "OAuth2 redirect URI returned instead of api endpoint"},
+      {n: 2650, up: 41, state: "closed", t: "Use system browser for OAuth"},
+      {n: 2002, up: 35, state: "closed", t: "OAuth2 Client Credentials — additional token-request fields"},
+      {n: 4391, up: 28, state: "closed", t: "Choose ID Token vs Access Token as Auth header"},
+      {n: 4392, up: 25, state: "open", t: "OAuth2 — reset token per env or via script"}
+    ] },
+
+  { id: 11, tier: 1, category: "Auth", title: "Inherit auth from parent, overridable at folder/request",
+    why: "Sounds trivial, constant rage trigger when absent. Collection-wide bearer with one-off exceptions is the common case.",
+    rec: "Auth cascades: collection → folder → request. Each level can override or explicitly opt out.",
+    issues: [{n: 2579, up: 34, state: "closed", t: "Inherit Auth From Parent, override at folder level"}] },
+
+  { id: 12, tier: 1, category: "Protocol", title: "WebSocket support (with save-multiple-frames)",
+    why: "Combined 150+ 👍 across two issues. Streaming APIs are mainstream now.",
+    rec: "Connection panel + message history + saved outgoing frames per connection + interpolated variables in frames.",
+    issues: [
+      {n: 316, up: 69, state: "closed", t: "Websocket support"},
+      {n: 1345, up: 66, state: "closed", t: "Support for websocket"},
+      {n: 5918, up: 25, state: "open", t: "Save multiple messages to ws"},
+      {n: 5887, up: 20, state: "open", t: "Socket.IO support"}
+    ] },
+
+  { id: 13, tier: 1, category: "Protocol", title: "gRPC support",
+    why: "Bruno #79, 82 👍. The enterprise-adoption blocker.",
+    rec: "Proto file loading (local + reflection). Streaming RPCs. Metadata editor. JSON ↔ proto inspection.",
+    issues: [{n: 79, up: 82, state: "closed", t: "gRPC support"}] },
+
+  { id: 14, tier: 1, category: "Protocol", title: "Streaming / SSE response rendering",
+    why: "Bruno #1884, 59 👍. LLM streaming made this table-stakes.",
+    rec: "Don't buffer the full body. Render chunks as they arrive. Syntax-highlight if JSON-per-line. Timing column per chunk.",
+    issues: [{n: 1884, up: 59, state: "closed", t: "Streamed response"}] },
+
+  { id: 15, tier: 1, category: "Protocol", title: "GraphQL — queries, introspection, subscriptions",
+    why: "GraphQL subscription support is still open. Introspection auth bugs rank too.",
+    rec: "Load schema via introspection (respect auth vars), queries + subscriptions, variable-aware query editor with autocomplete.",
+    issues: [
+      {n: 5801, up: 13, state: "open", t: "GraphQL subscription support"},
+      {n: 4921, up: 12, state: "open", t: "Auth var not interpolated when loading GQL schema"}
+    ] },
+
+  { id: 16, tier: 1, category: "Protocol", title: "MCP — client and server integration",
+    why: "Early but trending. No competitor has nailed this. AI-agent tooling will normalize around MCP.",
+    rec: "Call MCP servers as a first-class request type. Expose saved Probe requests as MCP tools for local agents. Huge differentiator window.",
+    issues: [{n: 4806, up: 19, state: "open", t: "MCP Server Integration"}] },
+
+  // Tier 2 — Import
+  { id: 20, tier: 2, category: "Import", title: "OpenAPI 2.x + 3.x import — with re-import merge",
+    why: "#2 most-upvoted open Bruno issue (120 👍) and still unsolved years later. Re-import clobbers existing collections (#3684).",
+    rec: "Accept .json / .yaml / URL. Pull auth schemes, examples, path params, descriptions. On re-import, three-way merge not overwrite.",
+    issues: [
+      {n: 81, up: 120, state: "open", t: "Import Open API / Swagger 2.x Spec"},
+      {n: 3684, up: 65, state: "closed", t: "Overwrite existing API collection on import"},
+      {n: 1354, up: 39, state: "closed", t: "Work with or autoimport OpenAPI V3 spec files"},
+      {n: 1013, up: 26, state: "closed", t: "CLI for OpenAPI 3 → Bru"}
+    ] },
+
+  { id: 21, tier: 2, category: "Import", title: "cURL paste import (anywhere)",
+    why: "Fastest onboarding trick: paste a curl command, get a fully-populated request.",
+    rec: "Detect curl in URL bar, clipboard-paste, and dedicated import. Reverse direction: \"copy as curl\" for every request.",
+    issues: [
+      {n: 338, up: 37, state: "closed", t: "Convert curl commands to requests"},
+      {n: 194, up: 55, state: "closed", t: "Support Import of curl and openapi files"}
+    ] },
+
+  { id: 22, tier: 2, category: "Import", title: "HAR import (record-from-devtools replay)",
+    why: "One-click \"record traffic in browser → replay here.\"",
+    rec: "File drop or menu item. Group by host. Preserve timings.",
+    issues: [{n: 1636, up: 23, state: "open", t: "Import HTTP Archives (HAR)"}] },
+
+  { id: 23, tier: 2, category: "Import", title: "WSDL / SOAP import",
+    why: "Small audience but zero competitors do it well.",
+    rec: "WSDL parsing, sample envelopes from XSD, XML-aware body editor.",
+    issues: [{n: 4050, up: 26, state: "closed", t: "Import WSDL Files"}] },
+
+  { id: 24, tier: 2, category: "Import", title: "Postman / Insomnia / Hoppscotch / Bruno import",
+    why: "Be the Switzerland of API clients. Every import you support is a migration path.",
+    rec: "Native importers for each. Preserve environments and auth where possible.",
+    issues: [{n: 1629, up: 14, state: "open", t: "Export Collections from Hoppscotch for Bruno"}] },
+
+  // Tier 3 — Vars & envs
+  { id: 30, tier: 3, category: "Variables", title: "Prompt-for-variable at send time, with dropdown of prior values",
+    why: "Bruno #1033 (66 👍) + #7036 (10 👍). Common pattern: per-send OTP, debug-userid, ticket-number.",
+    rec: "Syntax like {{?name}} pops a small modal before sending. Remember last N values as dropdown.",
+    issues: [
+      {n: 1033, up: 66, state: "closed", t: "Prompt for input a variable"},
+      {n: 7036, up: 10, state: "open", t: "Prompt variable dropdown"}
+    ] },
+
+  { id: 31, tier: 3, category: "Variables", title: "Nested environments + real global env + .env per environment",
+    why: "Envs are how teams share non-secret config. Current tools make this clunky.",
+    rec: "Hierarchical envs (base → dev/stage/prod). True globals. .env file per environment for secret segregation. Default-env flag.",
+    issues: [
+      {n: 115, up: 38, state: "closed", t: "Global Environments"},
+      {n: 292, up: 33, state: "open", t: "Nested Environments"},
+      {n: 3529, up: 31, state: "open", t: "Import/Export Global Environments"},
+      {n: 409, up: 20, state: "open", t: ".env file per environment"},
+      {n: 303, up: 18, state: "open", t: "Default environment"}
+    ] },
+
+  { id: 32, tier: 3, category: "Variables", title: "Recursive / referencing variables",
+    why: "base_url = {{protocol}}://{{host}}:{{port}}. Obvious, missing.",
+    rec: "Evaluate {{x}} recursively, detect cycles, show resolved value in tooltip.",
+    issues: [{n: 956, up: 25, state: "closed", t: "Recursive Variables / Variables referencing variables"}] },
+
+  { id: 33, tier: 3, category: "Variables", title: "Variable autocomplete in every text field",
+    why: "Type {{ → fuzzy picker. Reduces typos and teaches the user what's available.",
+    rec: "Autocomplete lists env + collection + folder + builtin vars with source column and resolved-value preview.",
+    issues: [{n: 412, up: 13, state: "open", t: "Auto-completion for vars"}] },
+
+  { id: 34, tier: 3, category: "Variables", title: "Reorderable env vars, possible-values, descriptions, temporary values",
+    why: "Small polish items that add up.",
+    rec: "Drag to reorder. Per-var description. Optional enum of \"known good\" values. Temp-override-this-send panel.",
+    issues: [
+      {n: 4722, up: 10, state: "open", t: "Allow reordering env vars"},
+      {n: 344, up: 13, state: "open", t: "Possible values for query params & variables"},
+      {n: 4838, up: 13, state: "open", t: "Display parameter descriptions"},
+      {n: 2764, up: 12, state: "open", t: "Temporary/unsaved variable values per request"}
+    ] },
+
+  // Tier 4 — Organization
+  { id: 40, tier: 4, category: "Organization", title: "Drag-and-drop reorder + move/clone between collections",
+    why: "Basic file-manager expectations. Their absence drives bug-report volume.",
+    rec: "Native drag-drop for requests and folders. Cross-collection cut/copy/paste. Undo.",
+    issues: [
+      {n: 1568, up: 28, state: "closed", t: "Organise folders in collection by drag and drop"},
+      {n: 3320, up: 32, state: "closed", t: "Move requests between collections"},
+      {n: 860, up: 29, state: "closed", t: "Clone an API request between collections"}
+    ] },
+
+  { id: 41, tier: 4, category: "Organization", title: "Open multiple collections / monorepo-aware workspace",
+    why: "One repo often contains many API subprojects. Forcing one-at-a-time is painful.",
+    rec: "Workspace = N collections. Show tabs from any collection together. Deep-search across all.",
+    issues: [
+      {n: 1806, up: 15, state: "open", t: "Open multiple collections / monorepo"},
+      {n: 5807, up: 16, state: "open", t: "Show open tabs from multiple collections"}
+    ] },
+
+  { id: 42, tier: 4, category: "URL / params", title: "First-class path parameter UX",
+    why: "Bruno #852, 45 👍. Rendering /users/:id with a dedicated input row is a quality-of-life win.",
+    rec: "Parse :param and {param} syntax. Show input row beneath URL. Keep sync both ways.",
+    issues: [{n: 852, up: 45, state: "closed", t: "Support for path parameters"}] },
+
+  { id: 43, tier: 4, category: "Transparency", title: "Display inherited headers/auth (see what's actually sent)",
+    why: "Users lose hours debugging \"why did this header appear.\" Make it observable.",
+    rec: "Merged-headers panel per request, with source tag (collection/folder/request/env/auth) and a timeline of the final outgoing bytes.",
+    issues: [
+      {n: 4485, up: 15, state: "open", t: "Display headers inherited from folder/collection"},
+      {n: 645, up: 11, state: "open", t: "Display all request headers in Timeline tab"}
+    ] },
+
+  { id: 44, tier: 4, category: "Organization", title: "Save response examples",
+    why: "Bruno #1235, 48 👍. Pin a response as \"this is what success looks like\"; powers mocking + docs.",
+    rec: "Right-click response → save as example. Reuse for mock server + generated docs.",
+    issues: [{n: 1235, up: 48, state: "closed", t: "Save Response Examples"}] },
+
+  { id: 45, tier: 4, category: "Scripts", title: "Collection- and folder-level pre/post scripts",
+    why: "Auth refresh, common setup — should not be copy-pasted to every request.",
+    rec: "Script slot on collection + each folder. Explicit run-order: collection → folder → request.",
+    issues: [{n: 334, up: 33, state: "closed", t: "Collection-Level Pre/Post Request Scripts"}] },
+
+  { id: 46, tier: 4, category: "Organization", title: "Same-named requests with different HTTP methods",
+    why: "GET /users and POST /users both called \"users\" is reasonable.",
+    rec: "Filesystem layout that disambiguates by method; UI that shows method chip prominently.",
+    issues: [{n: 3502, up: 11, state: "open", t: "Requests with same name but different methods"}] },
+
+  // Tier 5 — Power-user
+  { id: 50, tier: 5, category: "Keyboard", title: "Vim mode / full keyboard navigation",
+    why: "40 👍 and rising. The exact demographic fleeing Postman. egui won't do this for free — design it in early.",
+    rec: "Modal editing in body editors. Universal keyboard traversal (sidebar, tabs, editors, requests). Define once, test on every screen.",
+    issues: [{n: 2373, up: 40, state: "open", t: "Vim mode / keyboard centrism"}] },
+
+  { id: 51, tier: 5, category: "Keyboard", title: "User-configurable shortcuts",
+    why: "Power users rebind everything. Make it data.",
+    rec: "Shortcuts in a JSON/TOML file + editable in settings. Respect platform conventions by default.",
+    issues: [{n: 561, up: 12, state: "open", t: "User configurable shortcuts"}] },
+
+  { id: 52, tier: 5, category: "Keyboard", title: "Prettify JSON body via shortcut",
+    why: "Bruno #1578, 12 👍. \"Button in a menu\" is the wrong affordance.",
+    rec: "Ctrl/Cmd+Shift+F formats the current editor. Also on paste detect malformed-but-almost-JSON and offer one-click fix.",
+    issues: [{n: 1578, up: 12, state: "open", t: "JSON body prettify with a keyboard shortcut"}] },
+
+  { id: 53, tier: 5, category: "Layout", title: "Configurable / disable-able tab bar",
+    why: "Some workflows are single-pane tree + active request. Force-showing tabs is a dealbreaker for those users.",
+    rec: "Layout presets: tabbed / single-pane / split. Persist per workspace.",
+    issues: [{n: 1739, up: 16, state: "open", t: "Support disabling the tab bar"}] },
+
+  { id: 54, tier: 5, category: "Scripts", title: "bru.notify + bru.run('other-request') from scripts",
+    why: "Unlocks real workflow orchestration without inventing a new workflow UI.",
+    rec: "Scripting API can send notifications and trigger other requests by path. Combine with collection-level scripts for chained flows.",
+    issues: [
+      {n: 1350, up: 28, state: "closed", t: "Run a request via script"},
+      {n: 1527, up: 14, state: "open", t: "Add bru.notify in script and tests"}
+    ] },
+
+  // Tier 6 — Plumbing
+  { id: 60, tier: 6, category: "Extensibility", title: "Plugins / extensions (stable API from day one)",
+    why: "Bolting an extension API on later is painful. Rust + WASM is a natural fit.",
+    rec: "Define the plugin surface before 1.0: response transformers, custom auth providers, custom body editors, export formats.",
+    issues: [{n: 1529, up: 41, state: "open", t: "Bruno Plugins/Extensions"}] },
+
+  { id: 61, tier: 6, category: "Distribution", title: "Auto-updater",
+    why: "Especially for Linux — users don't want to hunt for releases.",
+    rec: "Signed auto-update channel. Opt-out respected. Release-notes shown inline.",
+    issues: [{n: 103, up: 46, state: "closed", t: "Auto updater"}] },
+
+  { id: 62, tier: 6, category: "HTTP correctness", title: "Proper URL-encode of query params (curl --url-query parity)",
+    why: "Subtle but widespread bug surface. Users paste a value with &/= and get mangled requests.",
+    rec: "Encode by default. Per-param \"raw\" escape hatch. Show pre-encoded and post-encoded URL side by side.",
+    issues: [{n: 1775, up: 25, state: "closed", t: "URL-encode query params like curl --url-query"}] },
+
+  { id: 63, tier: 6, category: "Bodies", title: "File upload in multipart bodies with variable interpolation",
+    why: "Bruno #352 (35 👍) + #769 (26 👍). Uploads + variable paths is a common testing workflow.",
+    rec: "File fields accept {{var}} paths, per-file content-type, base64 inline fallback.",
+    issues: [
+      {n: 352, up: 35, state: "closed", t: "Variables in the body with multipart form type"},
+      {n: 769, up: 26, state: "closed", t: "Upload a file"}
+    ] },
+
+  { id: 64, tier: 6, category: "Network", title: "SSH tunnel / SOCKS5 proxy with working DNS",
+    why: "Remote-cluster testing is common. Bruno's SOCKS5 DNS is broken.",
+    rec: "Support SSH tunnels per environment, SOCKS5 with remote DNS, per-request proxy override.",
+    issues: [
+      {n: 2655, up: 11, state: "open", t: "SSH Tunnel Proxy"},
+      {n: 820, up: 10, state: "open", t: "DNS does not work over socks5 proxy"}
+    ] },
+
+  { id: 65, tier: 6, category: "Network", title: "Sane self-signed cert handling",
+    why: "Dev environments = self-signed. Rage-trigger when opaque.",
+    rec: "Clear \"trust this cert for this env\" toggle. Import CA bundle per environment.",
+    issues: [{n: 4949, up: 10, state: "open", t: "Unable to verify first certificate / self-signed"}] },
+
+  { id: 66, tier: 6, category: "CLI", title: "HTML doc generation from CLI",
+    why: "CI pipelines can publish live docs. Free marketing for the tool.",
+    rec: "probe docs build → static site. Themeable. Includes saved response examples.",
+    issues: [{n: 7188, up: 10, state: "open", t: "Generate html docs from CLI"}] },
+
+  { id: 67, tier: 6, category: "CLI", title: "Perf / load testing from the CLI",
+    why: "Postman Runner is paywalled. A tiny open equivalent is huge goodwill.",
+    rec: "probe run --iterations N --concurrency K. Output to stdout + JUnit/JSON. No cloud.",
+    issues: [{n: 2643, up: 10, state: "open", t: "Performance testing using @usebruno/cli"}] },
+
+  { id: 68, tier: 6, category: "CLI", title: "Export collections + environments via CLI",
+    why: "CI-friendly interop without opening the GUI.",
+    rec: "probe export --format openapi|postman|har",
+    issues: [{n: 2679, up: 12, state: "open", t: "Allow export via CLI"}] },
+
+  { id: 69, tier: 6, category: "Localization", title: "i18n",
+    why: "Huge silent constituency of non-English users.",
+    rec: "Translatable strings from day one. Community translation file.",
+    issues: [{n: 322, up: 44, state: "open", t: "i18n"}] },
+];
+
+const tbody = document.getElementById("rows");
+const thead = document.querySelector("thead");
+const search = document.getElementById("search");
+const filterTier = document.getElementById("filter-tier");
+const filterCategory = document.getElementById("filter-category");
+const filterStatus = document.getElementById("filter-status");
+const filterMin = document.getElementById("filter-min");
+
+const categories = [...new Set(DATA.map(d => d.category))].sort();
+categories.forEach(c => {
+  const o = document.createElement("option");
+  o.value = c; o.textContent = c;
+  filterCategory.appendChild(o);
+});
+
+let sortKey = "upvotes";
+let sortDir = -1;
+
+function topUpvotes(d) { return d.issues.length ? Math.max(...d.issues.map(i => i.up)) : 0; }
+function totalUpvotes(d) { return d.issues.reduce((s, i) => s + i.up, 0); }
+function statusOf(d) {
+  if (!d.issues.length) return "none";
+  return d.issues.some(i => i.state === "open") ? "open" : "closed";
+}
+
+function upvoteClass(n) { return n >= 60 ? "high" : n >= 25 ? "mid" : ""; }
+
+function render() {
+  const q = search.value.toLowerCase();
+  const t = filterTier.value;
+  const c = filterCategory.value;
+  const s = filterStatus.value;
+  const m = parseInt(filterMin.value) || 0;
+
+  let rows = DATA.filter(d => {
+    if (t !== "" && String(d.tier) !== t) return false;
+    if (c !== "" && d.category !== c) return false;
+    if (s !== "" && statusOf(d) !== s) return false;
+    if (topUpvotes(d) < m) return false;
+    if (q) {
+      const hay = (d.title + " " + d.category + " " + d.why + " " + d.rec + " " + d.issues.map(i => i.t).join(" ")).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  rows.sort((a, b) => {
+    let av, bv;
+    switch (sortKey) {
+      case "tier": av = a.tier; bv = b.tier; break;
+      case "title": av = a.title.toLowerCase(); bv = b.title.toLowerCase(); break;
+      case "category": av = a.category.toLowerCase(); bv = b.category.toLowerCase(); break;
+      case "upvotes": av = topUpvotes(a); bv = topUpvotes(b); break;
+      case "totalUpvotes": av = totalUpvotes(a); bv = totalUpvotes(b); break;
+      case "status": av = statusOf(a); bv = statusOf(b); break;
+    }
+    if (av < bv) return -1 * sortDir;
+    if (av > bv) return  1 * sortDir;
+    return a.tier - b.tier;
+  });
+
+  tbody.innerHTML = "";
+  rows.forEach(d => {
+    const tr = document.createElement("tr");
+    tr.dataset.id = d.id;
+    const status = statusOf(d);
+    const top = topUpvotes(d);
+    const total = totalUpvotes(d);
+    tr.innerHTML = `
+      <td><span class="caret">▸</span></td>
+      <td><span class="chip t${d.tier}">T${d.tier}</span></td>
+      <td class="title">${escapeHtml(d.title)}</td>
+      <td class="category">${escapeHtml(d.category)}</td>
+      <td class="num upvotes ${upvoteClass(top)}">${top || "—"}</td>
+      <td class="num">${total || "—"}</td>
+      <td>${d.issues.map(i => `<a href="https://github.com/usebruno/bruno/issues/${i.n}" target="_blank" rel="noopener">#${i.n}</a> <span class="num" style="color:var(--muted)">${i.up}</span>`).join(" · ") || "<span style='color:var(--muted)'>—</span>"}</td>
+      <td>${status === "none" ? "<span class='chip'>—</span>" : `<span class="chip ${status}">${status}</span>`}</td>
+    `;
+    tr.addEventListener("click", () => toggleDetail(tr, d));
+    tbody.appendChild(tr);
+  });
+
+  document.getElementById("count-total").textContent = rows.length;
+  document.getElementById("count-open").textContent = rows.filter(d => statusOf(d) === "open").length;
+  document.getElementById("count-upvotes").textContent = rows.reduce((s, d) => s + totalUpvotes(d), 0).toLocaleString();
+}
+
+function toggleDetail(tr, d) {
+  const next = tr.nextElementSibling;
+  if (next && next.classList.contains("detail") && next.dataset.id === String(d.id)) {
+    next.remove();
+    tr.classList.remove("expanded");
+    tr.querySelector(".caret").textContent = "▸";
+    return;
+  }
+  document.querySelectorAll("tr.detail").forEach(r => r.remove());
+  document.querySelectorAll("tr.expanded").forEach(r => {
+    r.classList.remove("expanded");
+    r.querySelector(".caret").textContent = "▸";
+  });
+  const detail = document.createElement("tr");
+  detail.className = "detail";
+  detail.dataset.id = d.id;
+  detail.innerHTML = `<td colspan="8"><b>Why it matters:</b> ${escapeHtml(d.why)}<br><b>Recommendation for Probe:</b> ${escapeHtml(d.rec)}</td>`;
+  tr.after(detail);
+  tr.classList.add("expanded");
+  tr.querySelector(".caret").textContent = "▾";
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+thead.addEventListener("click", e => {
+  const th = e.target.closest("th.sortable");
+  if (!th) return;
+  const key = th.dataset.sort;
+  if (sortKey === key) { sortDir *= -1; } else { sortKey = key; sortDir = (key === "title" || key === "category" || key === "status") ? 1 : -1; }
+  document.querySelectorAll("th.sortable").forEach(h => h.classList.remove("sort-asc", "sort-desc"));
+  th.classList.add(sortDir === 1 ? "sort-asc" : "sort-desc");
+  render();
+});
+
+[search, filterTier, filterCategory, filterStatus, filterMin].forEach(el => el.addEventListener("input", render));
+
+document.getElementById("reset").addEventListener("click", () => {
+  search.value = ""; filterTier.value = ""; filterCategory.value = ""; filterStatus.value = ""; filterMin.value = 0;
+  render();
+});
+document.getElementById("expand-all").addEventListener("click", () => {
+  document.querySelectorAll("tbody tr:not(.detail)").forEach(tr => {
+    if (!tr.classList.contains("expanded")) tr.click();
+  });
+});
+document.getElementById("collapse-all").addEventListener("click", () => {
+  document.querySelectorAll("tr.detail").forEach(r => r.remove());
+  document.querySelectorAll("tr.expanded").forEach(r => {
+    r.classList.remove("expanded");
+    r.querySelector(".caret").textContent = "▸";
+  });
+});
+
+render();
+</script>
+</body>
+</html>
