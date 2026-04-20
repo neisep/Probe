@@ -9,11 +9,19 @@ struct EnvironmentVariableRow {
     value: String,
 }
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+enum EnvTab {
+    #[default]
+    Variables,
+    Auth,
+}
+
 #[derive(Default)]
 struct EnvironmentEditorUiState {
     synced_environment: Option<usize>,
     name_buffer: String,
     variable_rows: Vec<EnvironmentVariableRow>,
+    active_tab: EnvTab,
 }
 
 impl EnvironmentEditorUiState {
@@ -249,68 +257,28 @@ pub fn show_request_section(ui: &mut egui::Ui, state: &mut AppState) {
             .show(ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.strong(active_environment_label(state));
-                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                        if ui.small_button("+ Add").clicked() {
-                            editor.variable_rows.push(EnvironmentVariableRow::default());
-                        }
-                    });
                 });
-                ui.small("Variables are edited per active environment.");
+
+                ui.add_space(4.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(editor.active_tab == EnvTab::Variables, "Variables")
+                        .clicked()
+                    {
+                        editor.active_tab = EnvTab::Variables;
+                    }
+                    if ui
+                        .selectable_label(editor.active_tab == EnvTab::Auth, "Auth")
+                        .clicked()
+                    {
+                        editor.active_tab = EnvTab::Auth;
+                    }
+                });
                 ui.separator();
 
-                let mut remove_index = None;
-                for (index, variable) in editor.variable_rows.iter_mut().enumerate() {
-                    ui.horizontal(|ui| {
-                        ui.add(
-                            egui::TextEdit::singleline(&mut variable.key)
-                                .desired_width(140.0)
-                                .hint_text("KEY"),
-                        );
-                        ui.add(
-                            egui::TextEdit::singleline(&mut variable.value)
-                                .desired_width(260.0)
-                                .hint_text("Value"),
-                        );
-
-                        if ui.small_button("✕").clicked() {
-                            remove_index = Some(index);
-                        }
-                    });
-                }
-
-                if let Some(index) = remove_index {
-                    if index < editor.variable_rows.len() {
-                        editor.variable_rows.remove(index);
-                    }
-                }
-
-                if editor.variable_rows.is_empty() {
-                    ui.monospace("No variables. Use + Add to create one.");
-                }
-
-                let (has_pending_key, has_duplicate_key, committed_count) =
-                    apply_variable_rows(editor, state);
-
-                if has_pending_key {
-                    ui.small(
-                        egui::RichText::new("Rows with values need a key before they apply.")
-                            .color(egui::Color32::from_rgb(244, 180, 0)),
-                    );
-                }
-
-                if has_duplicate_key {
-                    ui.small(
-                        egui::RichText::new("Duplicate keys collapse to the last value.")
-                            .color(egui::Color32::from_rgb(244, 180, 0)),
-                    );
-                }
-
-                if !has_pending_key && !has_duplicate_key && committed_count > 0 {
-                    ui.small(format!(
-                        "{} applied to {}",
-                        pluralize(committed_count, "variable", "variables"),
-                        active_environment_label(state)
-                    ));
+                match editor.active_tab {
+                    EnvTab::Variables => render_variables_tab(ui, editor, state),
+                    EnvTab::Auth => crate::ui::oauth_panel::show(ui, state),
                 }
             });
     });
@@ -321,5 +289,74 @@ pub fn show_request_section(ui: &mut egui::Ui, state: &mut AppState) {
             .show(ui, |ui| {
                 ui.small("Environment editor unavailable");
             });
+    }
+}
+
+fn render_variables_tab(
+    ui: &mut egui::Ui,
+    editor: &mut EnvironmentEditorUiState,
+    state: &mut AppState,
+) {
+    ui.horizontal(|ui| {
+        ui.small("Variables are edited per active environment.");
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if ui.small_button("+ Add").clicked() {
+                editor.variable_rows.push(EnvironmentVariableRow::default());
+            }
+        });
+    });
+
+    let mut remove_index = None;
+    for (index, variable) in editor.variable_rows.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut variable.key)
+                    .desired_width(140.0)
+                    .hint_text("KEY"),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut variable.value)
+                    .desired_width(260.0)
+                    .hint_text("Value"),
+            );
+
+            if ui.small_button("✕").clicked() {
+                remove_index = Some(index);
+            }
+        });
+    }
+
+    if let Some(index) = remove_index {
+        if index < editor.variable_rows.len() {
+            editor.variable_rows.remove(index);
+        }
+    }
+
+    if editor.variable_rows.is_empty() {
+        ui.monospace("No variables. Use + Add to create one.");
+    }
+
+    let (has_pending_key, has_duplicate_key, committed_count) = apply_variable_rows(editor, state);
+
+    if has_pending_key {
+        ui.small(
+            egui::RichText::new("Rows with values need a key before they apply.")
+                .color(egui::Color32::from_rgb(244, 180, 0)),
+        );
+    }
+
+    if has_duplicate_key {
+        ui.small(
+            egui::RichText::new("Duplicate keys collapse to the last value.")
+                .color(egui::Color32::from_rgb(244, 180, 0)),
+        );
+    }
+
+    if !has_pending_key && !has_duplicate_key && committed_count > 0 {
+        ui.small(format!(
+            "{} applied to {}",
+            pluralize(committed_count, "variable", "variables"),
+            active_environment_label(state)
+        ));
     }
 }

@@ -1,0 +1,30 @@
+{
+  "active_flow": "device_code",
+  "auth_code": {
+    "auth_url": "",
+    "token_url": "",
+    "client_id": "",
+    "client_secret": "",
+    "scopes": "",
+    "audience": "",
+    "resource": "",
+    "extra_params": []
+  },
+  "client_credentials": {
+    "token_url": "",
+    "client_id": "",
+    "client_secret": "",
+    "scopes": "",
+    "audience": "",
+    "resource": "",
+    "extra_params": []
+  },
+  "device_code": {
+    "device_auth_url": "",
+    "token_url": "",
+    "client_id": "",
+    "client_secret": "",
+    "scopes": "",
+    "audience": ""
+  }
+}
