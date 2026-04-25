@@ -39,6 +39,7 @@ impl Environment {
             .insert(normalized_key.to_owned(), value.to_owned()))
     }
 
+    #[allow(dead_code)]
     pub fn remove_var(&mut self, key: &str) -> Option<String> {
         let normalized_key = key.trim();
         if normalized_key.is_empty() {

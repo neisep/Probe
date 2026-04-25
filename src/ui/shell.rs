@@ -34,7 +34,7 @@ fn show_settings_window(ctx: &egui::Context, state: &mut AppState) {
         .default_width(520.0)
         .default_height(460.0)
         .frame(
-            egui::Frame::window(&ctx.style())
+            egui::Frame::window(&ctx.global_style())
                 .fill(theme::PANEL)
                 .stroke(egui::Stroke::new(1.0, theme::BORDER)),
         )

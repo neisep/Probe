@@ -69,10 +69,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
     };
     let env_id = slugify_env_id(&env_name);
 
-    let Ok(mut panel) = panel_state().lock() else {
-        ui.small("OAuth panel unavailable");
-        return;
-    };
+    let mut panel = panel_state().lock().unwrap_or_else(|e| e.into_inner());
 
     sync_if_env_changed(&mut panel, &env_name, &env_id);
     poll_flow_events(&mut panel);
@@ -87,6 +84,11 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
         None => {
             ui.small("Pick a flow to configure credentials.");
         }
+    }
+
+    if panel.config.active_flow.is_some() {
+        ui.add_space(4.0);
+        render_injection_section(ui, &mut panel);
     }
 
     if let Some(message) = panel.status_message.clone() {
@@ -377,6 +379,8 @@ fn render_device_code_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
             .default_open(false)
             .show(ui, |ui| {
                 single_line(ui, "Audience", &mut fields.audience, "");
+                single_line(ui, "Resource", &mut fields.resource, "");
+                extra_params_editor(ui, &mut fields.extra_params);
             });
     }
 
@@ -398,6 +402,13 @@ fn render_device_code_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
             client_secret: normalized_optional(&snapshot.client_secret),
             scopes: snapshot.parsed_scopes(),
             audience: normalized_optional(&snapshot.audience),
+            resource: normalized_optional(&snapshot.resource),
+            extra_token_params: snapshot
+                .extra_params
+                .into_iter()
+                .filter(|(k, _)| !k.trim().is_empty())
+                .map(|(k, v)| (k.trim().to_owned(), v))
+                .collect(),
         };
         panel.in_flight = Some((FlowKind::DeviceCode, spawn_device_code_flow(config)));
         panel.status_message = Some("Requesting device code…".into());
@@ -496,6 +507,22 @@ fn render_token_pill(ui: &mut egui::Ui, token: Option<&Token>, in_flight: bool) 
             );
         }
     });
+}
+
+fn render_injection_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
+    egui::CollapsingHeader::new("Header injection")
+        .id_salt("oauth_injection")
+        .default_open(false)
+        .show(ui, |ui| {
+            let inj = &mut panel.config.injection;
+            ui.horizontal(|ui| {
+                ui.checkbox(&mut inj.enabled, "Inject token into requests");
+            });
+            ui.add_enabled_ui(inj.enabled, |ui| {
+                single_line(ui, "Header name", &mut inj.header_name, "Authorization");
+                single_line(ui, "Header prefix", &mut inj.header_prefix, "Bearer");
+            });
+        });
 }
 
 fn extra_params_editor(ui: &mut egui::Ui, params: &mut Vec<(String, String)>) {

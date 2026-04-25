@@ -1,12 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AuthUrl, ClientId, ClientSecret, DeviceAuthorizationUrl, Scope, TokenResponse, TokenUrl,
 };
 
-use crate::oauth::{FlowKind, Token};
+use crate::oauth::{now_unix, FlowKind, Token};
 
 #[derive(Debug, Clone)]
 pub struct DeviceCodeConfig {
@@ -16,6 +14,8 @@ pub struct DeviceCodeConfig {
     pub client_secret: Option<String>,
     pub scopes: Vec<String>,
     pub audience: Option<String>,
+    pub resource: Option<String>,
+    pub extra_token_params: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -55,6 +55,15 @@ where
     }
     if let Some(audience) = &config.audience {
         device_req = device_req.add_extra_param("audience", audience.clone());
+    }
+    if let Some(resource) = &config.resource {
+        device_req = device_req.add_extra_param("resource", resource.clone());
+    }
+    for (key, value) in &config.extra_token_params {
+        let key = key.trim();
+        if !key.is_empty() {
+            device_req = device_req.add_extra_param(key, value.clone());
+        }
     }
 
     let device_response: oauth2::StandardDeviceAuthorizationResponse =
@@ -130,13 +139,6 @@ fn build_client(config: &DeviceCodeConfig) -> Result<BasicClient, String> {
     .set_device_authorization_url(device_auth_url))
 }
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -151,6 +153,8 @@ mod tests {
             client_secret: None,
             scopes: vec![],
             audience: None,
+            resource: None,
+            extra_token_params: vec![],
         };
         let events: Arc<Mutex<Vec<DeviceCodeEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_capture = events.clone();
@@ -180,6 +184,8 @@ mod tests {
             client_secret: None,
             scopes: vec![],
             audience: None,
+            resource: None,
+            extra_token_params: vec![],
         };
         let events: Arc<Mutex<Vec<DeviceCodeEvent>>> = Arc::new(Mutex::new(Vec::new()));
         let events_capture = events.clone();

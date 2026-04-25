@@ -116,6 +116,7 @@ impl Runtime {
     }
 
     /// Submit a request. Returns the assigned RequestId or a string error.
+    #[allow(dead_code)]
     pub async fn submit(&self, req: AsyncRequest) -> Result<RequestId, String> {
         let id = self.inner.id_counter.fetch_add(1, Ordering::Relaxed);
         // register pending
@@ -139,6 +140,7 @@ impl Runtime {
         Ok(id)
     }
 
+    #[allow(dead_code)]
     pub async fn submit_resolved(
         &self,
         req: AsyncRequest,
@@ -150,6 +152,7 @@ impl Runtime {
     }
 
     /// Poll (and drain) pending events. Designed for UI-safe polling.
+    #[allow(dead_code)]
     pub async fn poll_events(&self) -> Vec<Event> {
         let mut st = self.inner.state.lock().await;
         let mut out = Vec::new();
@@ -182,6 +185,7 @@ impl Runtime {
         Ok(id)
     }
 
+    #[allow(dead_code)]
     pub fn submit_resolved_blocking(
         &self,
         req: AsyncRequest,
@@ -203,12 +207,14 @@ impl Runtime {
     }
 
     /// Query status for a given request id.
+    #[allow(dead_code)]
     pub async fn get_status(&self, id: RequestId) -> Option<RequestStatus> {
         let st = self.inner.state.lock().await;
         st.statuses.get(&id).cloned()
     }
 
     /// Retrieve stored request metadata (method/url/label/headers) if available.
+    #[allow(dead_code)]
     pub async fn get_request(&self, id: RequestId) -> Option<AsyncRequest> {
         let st = self.inner.state.lock().await;
         st.requests.get(&id).cloned()
@@ -216,6 +222,7 @@ impl Runtime {
 
     /// Try to cancel a pending request. This is best-effort: if a request has moved
     /// to InProgress it cannot be cancelled here. Returns true if cancellation succeeded.
+    #[allow(dead_code)]
     pub async fn cancel(&self, id: RequestId) -> bool {
         let mut st = self.inner.state.lock().await;
         match st.statuses.get(&id).cloned() {
@@ -243,6 +250,7 @@ impl Runtime {
     }
 
     /// Try to retrieve a result if available.
+    #[allow(dead_code)]
     pub async fn take_result(&self, id: RequestId) -> Option<AsyncRequestResult> {
         let mut st = self.inner.state.lock().await;
         st.results.remove(&id)
@@ -385,6 +393,7 @@ fn apply_request_headers(
     Ok(builder.headers(header_map))
 }
 
+#[allow(dead_code)]
 pub fn prepare_request(
     req: &AsyncRequest,
     values: &ResolutionValues,
@@ -393,6 +402,7 @@ pub fn prepare_request(
     req.resolve_with_behavior(values, behavior)
 }
 
+#[allow(dead_code)]
 fn submit_error(details: String) -> ErrorInfo {
     ErrorInfo::new(
         "submit failed".to_string(),

@@ -258,6 +258,7 @@ impl FileStorage {
         self.list_internal_keys(RESPONSES_DIR)
     }
 
+    #[allow(dead_code)]
     pub fn delete_response(&self, id: &str) -> Result<(), PersistenceError> {
         let _ = self.delete_internal(RESPONSE_PREVIEWS_DIR, id);
         self.delete_internal(RESPONSES_DIR, id)
@@ -324,6 +325,7 @@ impl FileStorage {
         self.read_internal_json(OAUTH_CONFIGS_DIR, env_id)
     }
 
+    #[allow(dead_code)]
     pub fn delete_oauth_config(&self, env_id: &str) -> Result<(), PersistenceError> {
         self.delete_internal(OAUTH_CONFIGS_DIR, env_id)
     }
@@ -370,6 +372,7 @@ impl FileStorage {
         Ok(serde_json::from_str(&text)?)
     }
 
+    #[allow(dead_code)]
     fn delete_internal(&self, category: &str, key: &str) -> Result<(), PersistenceError> {
         let path = self.internal_path(category, key)?;
         if !path.exists() {
@@ -537,6 +540,8 @@ mod tests {
             },
             headers: vec![],
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let file = RequestFile {
             relative_path: "auth/me".to_owned(),

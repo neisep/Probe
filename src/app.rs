@@ -7,6 +7,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
+use crate::openapi::{MergePreview, compute_merge, parse_spec};
+use crate::openapi::source::fetch_url;
 use crate::persistence::{EnvFile, FileStorage, RequestFile};
 use crate::runtime::{
     AsyncRequest, AsyncRequestResult, Event, ResolutionError, ResolutionErrorKind,
@@ -60,6 +62,12 @@ struct PendingWorkspaceImport {
     imported_state: AppState,
 }
 
+struct PendingOpenApiImport {
+    source: String,
+    preview: MergePreview,
+    merged: Vec<crate::state::RequestDraft>,
+}
+
 #[derive(Debug, Clone)]
 struct PendingRequestPreview {
     preview: request_preview_modal::RequestPreviewData,
@@ -76,8 +84,14 @@ pub struct ProbeApp {
     pending_request_context: Option<PendingRequestContext>,
     pending_workspace_import: Option<PendingWorkspaceImport>,
     pending_request_preview: Option<PendingRequestPreview>,
+    pending_openapi_import: Option<PendingOpenApiImport>,
+    openapi_url_input: String,
+    show_openapi_url_dialog: bool,
     theme_installed: bool,
     response_viewer: ResponseViewerState,
+    saved_requests: Vec<crate::state::RequestDraft>,
+    saved_environments: Vec<crate::state::Environment>,
+    pending_close: bool,
 }
 
 impl ProbeApp {
@@ -90,7 +104,8 @@ impl ProbeApp {
                 if let Some(stor) = &storage {
                     restore_workspace(&mut state, stor);
                 }
-
+                let saved_requests = state.requests.clone();
+                let saved_environments = state.environments.clone();
                 Self {
                     status: "First slice ready".to_owned(),
                     state,
@@ -100,12 +115,20 @@ impl ProbeApp {
                     pending_request_context: None,
                     pending_workspace_import: None,
                     pending_request_preview: None,
+                    pending_openapi_import: None,
+                    openapi_url_input: String::new(),
+                    show_openapi_url_dialog: false,
                     theme_installed: false,
                     response_viewer: ResponseViewerState::new(),
+                    saved_requests,
+                    saved_environments,
+                    pending_close: false,
                 }
             }
             (Err(error), Ok(state)) => Self {
                 status: format!("Runtime unavailable: {error}"),
+                saved_requests: state.requests.clone(),
+                saved_environments: state.environments.clone(),
                 state,
                 runtime: None,
                 storage,
@@ -113,8 +136,12 @@ impl ProbeApp {
                 pending_request_context: None,
                 pending_workspace_import: None,
                 pending_request_preview: None,
+                pending_openapi_import: None,
+                openapi_url_input: String::new(),
+                show_openapi_url_dialog: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                pending_close: false,
             },
             (Ok(runtime), Err(error)) => Self {
                 status: format!("State bootstrap fallback: {error}"),
@@ -125,8 +152,14 @@ impl ProbeApp {
                 pending_request_context: None,
                 pending_workspace_import: None,
                 pending_request_preview: None,
+                pending_openapi_import: None,
+                openapi_url_input: String::new(),
+                show_openapi_url_dialog: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                saved_requests: Vec::new(),
+                saved_environments: Vec::new(),
+                pending_close: false,
             },
             (Err(runtime_error), Err(state_error)) => Self {
                 status: format!("Startup fallback: runtime={runtime_error}; state={state_error}"),
@@ -137,8 +170,14 @@ impl ProbeApp {
                 pending_request_context: None,
                 pending_workspace_import: None,
                 pending_request_preview: None,
+                pending_openapi_import: None,
+                openapi_url_input: String::new(),
+                show_openapi_url_dialog: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                saved_requests: Vec::new(),
+                saved_environments: Vec::new(),
+                pending_close: false,
             },
         }
     }
@@ -315,6 +354,165 @@ impl ProbeApp {
         }
     }
 
+    fn import_openapi_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("OpenAPI spec", &["json", "yaml", "yml"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        let text = match fs::read_to_string(&path) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("OpenAPI read failed: {e}");
+                return;
+            }
+        };
+
+        self.apply_openapi_text(&text, path.display().to_string());
+    }
+
+    fn import_openapi_from_url(&mut self) {
+        let url = self.openapi_url_input.trim().to_owned();
+        if url.is_empty() {
+            return;
+        }
+        self.show_openapi_url_dialog = false;
+        self.status = format!("Fetching {url}…");
+
+        let text = match fetch_url(&url) {
+            Ok(t) => t,
+            Err(e) => {
+                self.status = format!("OpenAPI fetch failed: {e}");
+                return;
+            }
+        };
+
+        self.apply_openapi_text(&text, url);
+    }
+
+    fn apply_openapi_text(&mut self, text: &str, source: String) {
+        let ops = match parse_spec(text) {
+            Ok(ops) => ops,
+            Err(e) => {
+                self.status = format!("OpenAPI parse failed: {e}");
+                return;
+            }
+        };
+
+        let (merged, preview) = compute_merge(&self.state.requests, &ops);
+        self.status = format!(
+            "OpenAPI preview: {} new, {} updated, {} unchanged — confirm to apply",
+            preview.new_count, preview.updated_count, preview.unchanged_count
+        );
+        self.pending_openapi_import = Some(PendingOpenApiImport {
+            source,
+            preview,
+            merged,
+        });
+    }
+
+    fn confirm_openapi_import(&mut self) {
+        let Some(pending) = self.pending_openapi_import.take() else {
+            return;
+        };
+        self.state.requests = pending.merged;
+        self.state.ensure_valid_selection();
+        self.save_snapshot();
+        self.status = format!(
+            "OpenAPI import applied from {} ({} new, {} updated, {} unchanged)",
+            pending.source, pending.preview.new_count,
+            pending.preview.updated_count, pending.preview.unchanged_count
+        );
+    }
+
+    fn show_openapi_import_confirmation(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_openapi_import.as_ref() else {
+            return;
+        };
+
+        let mut confirm = false;
+        let mut cancel = false;
+
+        let (source, new_count, updated_count, unchanged_count) = (
+            pending.source.clone(),
+            pending.preview.new_count,
+            pending.preview.updated_count,
+            pending.preview.unchanged_count,
+        );
+
+        egui::Window::new("Confirm OpenAPI import")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label(format!("Source: {source}"));
+                ui.add_space(6.0);
+                ui.label(format!("New requests:       {new_count}"));
+                ui.label(format!("Updated requests:   {updated_count}"));
+                ui.label(format!("Unchanged requests: {unchanged_count}"));
+                ui.add_space(4.0);
+                ui.small("Auth, headers, and body you have set on existing requests will be preserved.");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Import").clicked() {
+                        confirm = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.pending_openapi_import = None;
+            self.status = "OpenAPI import cancelled".to_owned();
+        }
+        if confirm {
+            self.confirm_openapi_import();
+        }
+    }
+
+    fn show_openapi_url_dialog(&mut self, ctx: &egui::Context) {
+        if !self.show_openapi_url_dialog {
+            return;
+        }
+
+        let mut fetch = false;
+        let mut close = false;
+
+        egui::Window::new("Import OpenAPI from URL")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("Spec URL:");
+                let response = ui.text_edit_singleline(&mut self.openapi_url_input);
+                if response.lost_focus()
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
+                {
+                    fetch = true;
+                }
+                ui.add_space(6.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Fetch").clicked() {
+                        fetch = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+            });
+
+        if close {
+            self.show_openapi_url_dialog = false;
+        }
+        if fetch {
+            self.import_openapi_from_url();
+        }
+    }
+
     fn can_start_request_preview(&self) -> bool {
         self.pending_request.is_none()
             && self.pending_workspace_import.is_none()
@@ -366,23 +564,25 @@ impl ProbeApp {
                     self.status = "Runtime unavailable".to_owned();
                     return;
                 };
-                if let Some(env_name) = self.state.active_environment_name() {
-                    match crate::oauth::middleware::resolve_authorization(env_name) {
-                        Ok(Some(header_value)) => {
-                            let already_set = prepared_request
-                                .headers
-                                .iter()
-                                .any(|(name, _)| name.eq_ignore_ascii_case("Authorization"));
-                            if !already_set {
-                                prepared_request
+                if request.attach_oauth {
+                    if let Some(env_name) = self.state.active_environment_name() {
+                        match crate::oauth::middleware::resolve_authorization(env_name) {
+                            Ok(Some(header_value)) => {
+                                let already_set = prepared_request
                                     .headers
-                                    .push(("Authorization".to_owned(), header_value));
+                                    .iter()
+                                    .any(|(name, _)| name.eq_ignore_ascii_case(&header_value.name));
+                                if !already_set {
+                                    prepared_request
+                                        .headers
+                                        .push((header_value.name, header_value.value));
+                                }
                             }
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            self.status = format!("OAuth middleware: {error}");
-                            return;
+                            Ok(None) => {}
+                            Err(error) => {
+                                self.status = format!("OAuth middleware: {error}");
+                                return;
+                            }
                         }
                     }
                 }
@@ -504,6 +704,16 @@ impl ProbeApp {
             return;
         }
 
+        for dir in ["responses", "response_previews"] {
+            let path = storage.base_dir().join(".probe").join(dir);
+            if path.exists() {
+                if let Err(error) = fs::remove_dir_all(&path) {
+                    self.status = format!("Save failed: {error}");
+                    return;
+                }
+            }
+        }
+
         let mut response_ids = Vec::new();
         for (index, response) in self.state.responses.iter().enumerate() {
             let response_id = format!("response-{index}");
@@ -599,6 +809,58 @@ impl ProbeApp {
 
         if let Err(error) = storage.save_session_state(&session_state) {
             self.status = format!("Save failed: {error}");
+            return;
+        }
+
+        self.saved_requests = self.state.requests.clone();
+        self.saved_environments = self.state.environments.clone();
+    }
+
+    fn has_unsaved_changes(&self) -> bool {
+        self.state.requests != self.saved_requests
+            || self.state.environments != self.saved_environments
+    }
+
+    fn show_unsaved_changes_dialog(&mut self, ctx: &egui::Context) {
+        if !self.pending_close {
+            return;
+        }
+
+        let mut save_and_close = false;
+        let mut close_without_saving = false;
+        let mut cancel = false;
+
+        egui::Window::new("Unsaved changes")
+            .collapsible(false)
+            .resizable(false)
+            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+            .show(ctx, |ui| {
+                ui.label("You have unsaved changes. Would you like to save before closing?");
+                ui.add_space(8.0);
+                ui.horizontal(|ui| {
+                    if ui.button("Save and close").clicked() {
+                        save_and_close = true;
+                    }
+                    if ui.button("Close without saving").clicked() {
+                        close_without_saving = true;
+                    }
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                });
+            });
+
+        if cancel {
+            self.pending_close = false;
+        }
+        if close_without_saving {
+            self.saved_requests = self.state.requests.clone();
+            self.saved_environments = self.state.environments.clone();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
+        if save_and_close {
+            self.save_snapshot();
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
 }
@@ -712,6 +974,28 @@ impl eframe::App for ProbeApp {
                         {
                             self.import_workspace();
                         }
+                        let openapi_busy = self.pending_openapi_import.is_some()
+                            || self.show_openapi_url_dialog;
+                        if ui
+                            .add_enabled(
+                                !openapi_busy,
+                                egui::Button::new("OpenAPI").small(),
+                            )
+                            .on_hover_text("Import from OpenAPI / Swagger file")
+                            .clicked()
+                        {
+                            self.import_openapi_file();
+                        }
+                        if ui
+                            .add_enabled(
+                                !openapi_busy,
+                                egui::Button::new("OA URL").small(),
+                            )
+                            .on_hover_text("Import from OpenAPI / Swagger URL")
+                            .clicked()
+                        {
+                            self.show_openapi_url_dialog = true;
+                        }
                         if ui.small_button("Clear").clicked() {
                             self.state.responses.clear();
                             self.state.ui.clear_selected_response();
@@ -755,7 +1039,15 @@ impl eframe::App for ProbeApp {
         );
         self.handle_pending_ui_actions();
         self.show_import_confirmation(ui.ctx());
+        self.show_openapi_import_confirmation(ui.ctx());
+        self.show_openapi_url_dialog(ui.ctx());
         self.show_request_preview(ui.ctx());
+
+        if ui.ctx().input(|i| i.viewport().close_requested()) && self.has_unsaved_changes() {
+            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            self.pending_close = true;
+        }
+        self.show_unsaved_changes_dialog(ui.ctx());
     }
 }
 
@@ -1445,27 +1737,6 @@ fn build_request_url(
     }
 
     Ok(url.to_string())
-}
-
-fn normalized_optional_value(value: Option<&str>) -> Option<String> {
-    value
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn parse_string_pairs(value: &serde_json::Value) -> Option<Vec<(String, String)>> {
-    let pairs = value.as_array()?;
-    Some(
-        pairs
-            .iter()
-            .filter_map(|pair| {
-                let key = pair.get(0).and_then(|key| key.as_str())?;
-                let value = pair.get(1).and_then(|value| value.as_str())?;
-                Some((key.to_owned(), value.to_owned()))
-            })
-            .collect(),
-    )
 }
 
 fn apply_pending_request_context(
