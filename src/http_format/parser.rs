@@ -7,7 +7,7 @@ use super::HttpFormatError;
 /// Parse the contents of a single `.http` file into a [`RequestDraft`].
 ///
 /// Supports the REST Client / JetBrains HTTP Client subset: comments (`#`, `//`),
-/// `# @name`, `# @tag`, `# @probe-auth` directives, and the first request when
+/// `# @name`, `# @probe-auth` directives, and the first request when
 /// multiple requests are separated by `###`.
 pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
     if text.trim().is_empty() {
@@ -15,7 +15,6 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
     }
 
     let mut name = String::new();
-    let mut tags: Vec<String> = Vec::new();
     let mut directive_auth: Option<RequestAuth> = None;
     let mut import_key: Option<String> = None;
     let mut method = String::new();
@@ -36,7 +35,7 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
                     continue;
                 }
                 if let Some(directive) = strip_comment_prefix(trimmed) {
-                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth, &mut import_key);
+                    apply_directive(directive, &mut name, &mut directive_auth, &mut import_key);
                     continue;
                 }
 
@@ -56,7 +55,7 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
                     continue;
                 }
                 if let Some(directive) = strip_comment_prefix(trimmed) {
-                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth, &mut import_key);
+                    apply_directive(directive, &mut name, &mut directive_auth, &mut import_key);
                     continue;
                 }
 
@@ -107,7 +106,6 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
     };
     draft.adopt_url_query(&url);
 
-    let _ = tags;
     Ok(draft)
 }
 
@@ -138,19 +136,11 @@ fn strip_comment_prefix(line: &str) -> Option<&str> {
 fn apply_directive(
     directive: &str,
     name: &mut String,
-    tags: &mut Vec<String>,
     auth: &mut Option<RequestAuth>,
     import_key: &mut Option<String>,
 ) {
     if let Some(value) = directive.strip_prefix("@name ") {
         *name = value.trim().to_owned();
-        return;
-    }
-    if let Some(value) = directive.strip_prefix("@tag ") {
-        *tags = value
-            .split_whitespace()
-            .map(|token| token.to_owned())
-            .collect();
         return;
     }
     if let Some(value) = directive.strip_prefix("@probe-auth ") {
@@ -285,10 +275,9 @@ X-Trace: abc
     }
 
     #[test]
-    fn parses_name_directive_and_tags() {
+    fn parses_name_directive() {
         let text = "\
 # @name Fetch health
-# @tag system health
 GET https://example.com/health
 ";
         let draft = parse_request(text).expect("parse");

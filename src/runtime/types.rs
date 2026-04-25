@@ -41,7 +41,6 @@ pub struct ResolutionError {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub enum RequestStatus {
     Pending,
     InProgress,

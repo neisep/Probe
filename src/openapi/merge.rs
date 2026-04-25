@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::state::request::RequestDraft;
 
@@ -20,47 +20,77 @@ pub fn compute_merge(
     existing: &[RequestDraft],
     incoming: &[ImportedOperation],
 ) -> (Vec<RequestDraft>, MergePreview) {
-    let mut index: HashMap<&str, &RequestDraft> = HashMap::new();
-    for req in existing {
-        if let Some(key) = req.import_key.as_deref() {
-            index.insert(key, req);
-        }
+    let mut incoming_index: HashMap<&str, &ImportedOperation> = HashMap::new();
+    for op in incoming {
+        incoming_index.insert(op.import_key.as_str(), op);
     }
 
     let mut result: Vec<RequestDraft> = Vec::new();
     let mut preview = MergePreview::default();
+    let mut seen_keys: HashSet<&str> = HashSet::new();
 
-    for op in incoming {
-        if let Some(existing_req) = index.get(op.import_key.as_str()) {
-            let mut draft = (*existing_req).clone();
-            let before = draft.clone();
+    // Pass 1: walk existing in user order — update spec-managed, preserve hand-crafted.
+    for req in existing {
+        if let Some(key) = req.import_key.as_deref() {
+            if let Some(op) = incoming_index.get(key) {
+                let mut draft = req.clone();
+                let before = draft.clone();
 
-            draft.name = op.name.clone();
-            draft.folder = op.folder.clone();
-            draft.url = op.url.clone();
-            draft.query_params = op.query_params.clone();
-            draft.import_key = Some(op.import_key.clone());
+                draft.name = op.name.clone();
+                draft.folder = op.folder.clone();
+                draft.url = op.url.clone();
+                draft.query_params = merge_query_params(&draft.query_params, &op.query_params);
+                draft.import_key = Some(op.import_key.clone());
 
-            if draft == before {
-                preview.unchanged_count += 1;
-            } else {
-                preview.updated_count += 1;
+                if draft == before {
+                    preview.unchanged_count += 1;
+                } else {
+                    preview.updated_count += 1;
+                }
+                result.push(draft);
+                seen_keys.insert(key);
             }
-            result.push(draft);
+            // Spec-managed request removed from spec: silently drop it.
         } else {
+            result.push(req.clone());
+        }
+    }
+
+    // Pass 2: append operations that are new to this spec (in spec order).
+    for op in incoming {
+        if !seen_keys.contains(op.import_key.as_str()) {
             result.push(draft_from_operation(op));
             preview.new_count += 1;
         }
     }
 
-    // Always preserve hand-crafted requests (no import_key).
-    for req in existing {
-        if req.import_key.is_none() {
-            result.push(req.clone());
+    (result, preview)
+}
+
+/// Merge spec-defined query params with the user's existing ones.
+/// Spec params keep any user-filled value; user-added params (not in spec) are appended.
+fn merge_query_params(
+    existing: &[(String, String)],
+    incoming: &[(String, String)],
+) -> Vec<(String, String)> {
+    let spec_keys: HashSet<&str> = incoming.iter().map(|(k, _)| k.as_str()).collect();
+    let mut result: Vec<(String, String)> = incoming
+        .iter()
+        .map(|(k, _)| {
+            let user_value = existing
+                .iter()
+                .find(|(ek, _)| ek == k)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+            (k.clone(), user_value)
+        })
+        .collect();
+    for (k, v) in existing {
+        if !spec_keys.contains(k.as_str()) {
+            result.push((k.clone(), v.clone()));
         }
     }
-
-    (result, preview)
+    result
 }
 
 fn draft_from_operation(op: &ImportedOperation) -> RequestDraft {
@@ -190,6 +220,40 @@ mod tests {
         let ops = vec![make_op("GET:/pet", "findPets", "pet", "https://x.com/pet")];
         let (result, _) = compute_merge(&existing, &ops);
         assert!(result.iter().any(|r| r.name == "My custom request"));
+    }
+
+    #[test]
+    fn user_query_values_and_custom_params_preserved_on_update() {
+        let mut op = make_op("GET:/pets", "listPets", "pets", "https://x.com/pets");
+        op.query_params = vec![
+            ("limit".to_owned(), String::new()),
+            ("status".to_owned(), String::new()),
+        ];
+        let existing = vec![RequestDraft {
+            name: "listPets".to_owned(),
+            folder: "pets".to_owned(),
+            method: "GET".to_owned(),
+            url: "https://x.com/pets".to_owned(),
+            query_params: vec![
+                ("limit".to_owned(), "20".to_owned()),   // user-filled spec param
+                ("x-debug".to_owned(), "true".to_owned()), // user-added custom param
+            ],
+            auth: RequestAuth::None,
+            headers: Vec::new(),
+            body: None,
+            attach_oauth: true,
+            import_key: Some("GET:/pets".to_owned()),
+        }];
+
+        let (result, _) = compute_merge(&existing, &[op]);
+        let params = &result[0].query_params;
+
+        // spec param "limit": user's value preserved
+        assert_eq!(params.iter().find(|(k, _)| k == "limit").map(|(_, v)| v.as_str()), Some("20"));
+        // spec param "status": new, gets empty value
+        assert_eq!(params.iter().find(|(k, _)| k == "status").map(|(_, v)| v.as_str()), Some(""));
+        // user-added param "x-debug": preserved
+        assert_eq!(params.iter().find(|(k, _)| k == "x-debug").map(|(_, v)| v.as_str()), Some("true"));
     }
 
     #[test]

@@ -1,15 +1,14 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
-    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope, TokenResponse,
-    TokenUrl,
+    AuthUrl, AuthorizationCode, ClientId, ClientSecret, CsrfToken, RedirectUrl, Scope, TokenUrl,
 };
 
 use crate::oauth::browser::{LoopbackListener, open_url};
 use crate::oauth::pkce;
 use crate::oauth::{FlowKind, OAuthError, Token};
+
+use super::{build_cached_token, collect_extra_params};
 
 #[derive(Debug, Clone)]
 pub struct AuthCodeConfig {
@@ -37,14 +36,8 @@ pub async fn run(config: &AuthCodeConfig) -> Result<Token, OAuthError> {
     for scope in &config.scopes {
         auth_request = auth_request.add_scope(Scope::new(scope.clone()));
     }
-    if let Some(audience) = &config.audience {
-        auth_request = auth_request.add_extra_param("audience", audience.clone());
-    }
-    if let Some(resource) = &config.resource {
-        auth_request = auth_request.add_extra_param("resource", resource.clone());
-    }
-    for (k, v) in &config.extra_auth_params {
-        auth_request = auth_request.add_extra_param(k.clone(), v.clone());
+    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_auth_params) {
+        auth_request = auth_request.add_extra_param(k, v);
     }
 
     let (auth_url_full, csrf_token) = auth_request.url();
@@ -78,7 +71,7 @@ pub async fn run(config: &AuthCodeConfig) -> Result<Token, OAuthError> {
         .await
         .map_err(|e| OAuthError::Http(format!("token exchange failed: {e}")))?;
 
-    Ok(build_token(config, &token_response))
+    Ok(build_cached_token(&token_response, FlowKind::AuthCodePkce, &config.scopes, None))
 }
 
 fn build_client(config: &AuthCodeConfig, redirect_uri: &str) -> Result<BasicClient, OAuthError> {
@@ -101,40 +94,6 @@ fn build_client(config: &AuthCodeConfig, redirect_uri: &str) -> Result<BasicClie
     .set_redirect_uri(redirect))
 }
 
-fn build_token(
-    config: &AuthCodeConfig,
-    response: &oauth2::StandardTokenResponse<
-        oauth2::EmptyExtraTokenFields,
-        oauth2::basic::BasicTokenType,
-    >,
-) -> Token {
-    let now = now_unix();
-    let expires_at = response
-        .expires_in()
-        .map(|d| now.saturating_add(d.as_secs() as i64))
-        .unwrap_or_else(|| now.saturating_add(3600));
-
-    let scopes = response
-        .scopes()
-        .map(|s| s.iter().map(|sc| sc.to_string()).collect())
-        .unwrap_or_else(|| config.scopes.clone());
-
-    Token {
-        flow: FlowKind::AuthCodePkce,
-        access_token: response.access_token().secret().clone(),
-        refresh_token: response.refresh_token().map(|rt| rt.secret().clone()),
-        expires_at,
-        obtained_at: now,
-        scopes,
-    }
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {
