@@ -1,12 +1,10 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
     AuthUrl, ClientId, ClientSecret, Scope, TokenResponse, TokenUrl,
 };
 
-use crate::oauth::{FlowKind, OAuthError, Token};
+use crate::oauth::{now_unix, FlowKind, OAuthError, Token};
 
 #[derive(Debug, Clone)]
 pub struct ClientCredentialsConfig {
@@ -69,13 +67,6 @@ pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> 
         obtained_at: now,
         scopes,
     })
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 #[cfg(test)]

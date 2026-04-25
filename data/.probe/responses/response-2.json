@@ -1,8 +1,0 @@
-{
-  "id": "response-2",
-  "request_id": "request-0",
-  "status_code": null,
-  "summary": "request failed [request]: error sending request for url (https://neisep.com/)",
-  "duration_ms": null,
-  "created_at": null
-}

@@ -40,6 +40,7 @@ impl LoopbackListener {
             .await
             .map_err(|e| OAuthError::Browser(format!("accept failed: {e}")))?;
 
+        const MAX_REQUEST_SIZE: usize = 64 * 1024;
         let mut buf = vec![0u8; 4096];
         let mut total = 0usize;
         loop {
@@ -55,7 +56,10 @@ impl LoopbackListener {
                 break;
             }
             if total == buf.len() {
-                buf.resize(buf.len() * 2, 0);
+                if buf.len() >= MAX_REQUEST_SIZE {
+                    return Err(OAuthError::Browser("redirect request too large".into()));
+                }
+                buf.resize((buf.len() * 2).min(MAX_REQUEST_SIZE), 0);
             }
         }
 
@@ -93,8 +97,12 @@ impl LoopbackListener {
             body.len(),
             body
         );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
+        if let Err(e) = stream.write_all(response.as_bytes()).await {
+            tracing::warn!("failed to write OAuth callback response: {e}");
+        }
+        if let Err(e) = stream.shutdown().await {
+            tracing::warn!("failed to shut down OAuth callback stream: {e}");
+        }
 
         Ok(params)
     }

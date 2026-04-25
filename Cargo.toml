@@ -3,10 +3,15 @@ name = "probe"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+keyring-storage = ["dep:keyring"]
+
 [dependencies]
 base64 = "0.22.1"
 eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
-keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"] }
+keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"], optional = true }
+openapiv3 = "2"
+serde_yaml = "0.9"
 oauth2 = { version = "4", default-features = false, features = ["reqwest", "rustls-tls"] }
 rand = "0.8"
 reqwest = { version = "0.13.2", default-features = false, features = ["rustls", "json"] }

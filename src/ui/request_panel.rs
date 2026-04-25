@@ -1,3 +1,7 @@
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use crate::oauth::config::slugify_env_id;
+use crate::oauth::{FlowKind, TokenStore, token_store};
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
 use crate::state::{AppState, RequestDraft, RequestTab};
 use crate::ui::theme;
@@ -344,6 +348,63 @@ fn show_auth_tab(ui: &mut egui::Ui, state: &mut AppState) {
             });
         }
     }
+
+    show_oauth_hint(ui, state);
+}
+
+fn show_oauth_hint(ui: &mut egui::Ui, state: &mut AppState) {
+    ui.add_space(12.0);
+    ui.separator();
+    ui.add_space(4.0);
+
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    let active_token = state.active_environment_name().and_then(|env_name| {
+        let env_id = slugify_env_id(env_name);
+        let store = token_store();
+        for flow in [
+            FlowKind::AuthCodePkce,
+            FlowKind::ClientCredentials,
+            FlowKind::DeviceCode,
+        ] {
+            if let Ok(Some(token)) = store.get(&env_id, flow.as_str()) {
+                if !token.is_expired(now) {
+                    return Some(token);
+                }
+            }
+        }
+        None
+    });
+
+    let Some(req) = state.selected_request_mut() else {
+        return;
+    };
+
+    ui.horizontal(|ui| {
+        ui.checkbox(&mut req.attach_oauth, "Attach OAuth2 token");
+        if req.attach_oauth {
+            if let Some(token) = &active_token {
+                let seconds = token.expires_at.saturating_sub(now);
+                let label = if seconds < 60 {
+                    format!("(expires in {seconds}s)")
+                } else if seconds < 3600 {
+                    format!("(expires in {}m)", seconds / 60)
+                } else {
+                    format!("(expires in {}h {}m)", seconds / 3600, (seconds % 3600) / 60)
+                };
+                ui.small(egui::RichText::new("●").color(egui::Color32::from_rgb(52, 168, 83)));
+                ui.small(egui::RichText::new(label).color(egui::Color32::from_rgb(52, 168, 83)));
+            } else {
+                ui.small(
+                    egui::RichText::new("no token — configure in Settings → Auth")
+                        .color(theme::TEXT_MUTED),
+                );
+            }
+        }
+    });
 }
 
 fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {

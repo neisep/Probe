@@ -1,5 +1,5 @@
 {
-  "active_flow": "device_code",
+  "active_flow": "auth_code_pkce",
   "auth_code": {
     "auth_url": "",
     "token_url": "",
@@ -25,6 +25,13 @@
     "client_id": "",
     "client_secret": "",
     "scopes": "",
-    "audience": ""
+    "audience": "",
+    "resource": "",
+    "extra_params": []
+  },
+  "injection": {
+    "enabled": true,
+    "header_name": "Authorization",
+    "header_prefix": "Bearer"
   }
 }

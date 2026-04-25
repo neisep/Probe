@@ -17,6 +17,7 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
     let mut name = String::new();
     let mut tags: Vec<String> = Vec::new();
     let mut directive_auth: Option<RequestAuth> = None;
+    let mut import_key: Option<String> = None;
     let mut method = String::new();
     let mut url = String::new();
     let mut headers: Vec<(String, String)> = Vec::new();
@@ -35,7 +36,7 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
                     continue;
                 }
                 if let Some(directive) = strip_comment_prefix(trimmed) {
-                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth);
+                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth, &mut import_key);
                     continue;
                 }
 
@@ -55,7 +56,7 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
                     continue;
                 }
                 if let Some(directive) = strip_comment_prefix(trimmed) {
-                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth);
+                    apply_directive(directive, &mut name, &mut tags, &mut directive_auth, &mut import_key);
                     continue;
                 }
 
@@ -101,6 +102,8 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
         auth,
         headers: remaining_headers,
         body,
+        attach_oauth: true,
+        import_key,
     };
     draft.adopt_url_query(&url);
 
@@ -137,6 +140,7 @@ fn apply_directive(
     name: &mut String,
     tags: &mut Vec<String>,
     auth: &mut Option<RequestAuth>,
+    import_key: &mut Option<String>,
 ) {
     if let Some(value) = directive.strip_prefix("@name ") {
         *name = value.trim().to_owned();
@@ -152,6 +156,13 @@ fn apply_directive(
     if let Some(value) = directive.strip_prefix("@probe-auth ") {
         if let Some(parsed) = parse_probe_auth_directive(value.trim()) {
             *auth = Some(parsed);
+        }
+        return;
+    }
+    if let Some(value) = directive.strip_prefix("@probe-import-key ") {
+        let key = value.trim();
+        if !key.is_empty() {
+            *import_key = Some(key.to_owned());
         }
     }
 }
@@ -386,5 +397,23 @@ X-API-Key: s3cret
             vec![("X-API-Key".to_owned(), "s3cret".to_owned())]
         );
         let _ = ApiKeyLocation::Header;
+    }
+
+    #[test]
+    fn import_key_directive_round_trips() {
+        use crate::http_format::writer::write_request;
+        let mut draft = RequestDraft::default_request();
+        draft.import_key = Some("GET:/pets/{petId}".to_owned());
+        let text = write_request(&draft);
+        assert!(text.contains("# @probe-import-key GET:/pets/{petId}\n"), "missing directive in: {text}");
+        let parsed = parse_request(&text).expect("parse");
+        assert_eq!(parsed.import_key, Some("GET:/pets/{petId}".to_owned()));
+    }
+
+    #[test]
+    fn missing_import_key_directive_leaves_field_none() {
+        let text = "GET https://example.com/health\n";
+        let draft = parse_request(text).expect("parse");
+        assert_eq!(draft.import_key, None);
     }
 }

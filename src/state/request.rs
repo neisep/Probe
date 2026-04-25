@@ -88,7 +88,7 @@ impl RequestAuth {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RequestDraft {
     pub name: String,
     pub folder: String,
@@ -98,6 +98,14 @@ pub struct RequestDraft {
     pub auth: RequestAuth,
     pub headers: Vec<(String, String)>,
     pub body: Option<String>,
+    #[serde(default = "default_true")]
+    pub attach_oauth: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_key: Option<String>,
+}
+
+fn default_true() -> bool {
+    true
 }
 
 impl RequestDraft {
@@ -111,6 +119,8 @@ impl RequestDraft {
             auth: RequestAuth::None,
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         }
     }
 
@@ -134,6 +144,8 @@ impl RequestDraft {
             auth: RequestAuth::None,
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         })
     }
 
@@ -185,6 +197,7 @@ impl RequestDraft {
         self.query_params = query_params;
     }
 
+    #[allow(dead_code)]
     pub fn set_organization(&mut self, name: &str, folder_path: &str) {
         self.name = normalize_request_name(name).unwrap_or_default();
         self.folder = normalize_folder_path(folder_path);
@@ -271,6 +284,8 @@ mod tests {
             },
             headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
             body: Some("{\"ok\":true}".to_owned()),
+            attach_oauth: true,
+            import_key: None,
         };
 
         let clone = draft.duplicate();

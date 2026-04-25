@@ -1,2 +1,3 @@
+# @name test2
 GET https://www.neisep.com
 client: Probe

@@ -1,6 +1,7 @@
 mod app;
 mod http_format;
 mod oauth;
+mod openapi;
 mod persistence;
 mod runtime;
 mod state;

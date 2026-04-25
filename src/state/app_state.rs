@@ -142,6 +142,7 @@ impl AppState {
             .map(|environment| &environment.vars)
     }
 
+    #[allow(dead_code)]
     pub fn active_variables_mut(&mut self) -> Option<&mut BTreeMap<String, String>> {
         self.active_environment_mut()
             .map(|environment| &mut environment.vars)
@@ -157,6 +158,7 @@ impl AppState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove_active_environment_var(&mut self, key: &str) -> Option<String> {
         self.active_environment_mut()
             .and_then(|environment| environment.remove_var(key))
@@ -173,6 +175,7 @@ impl AppState {
             .and_then(|selected_request| self.requests.get(selected_request))
     }
 
+    #[allow(dead_code)]
     pub fn selected_request_id(&self) -> Option<String> {
         self.selected_request_index()
             .map(Self::request_id_for_index)
@@ -203,6 +206,7 @@ impl AppState {
         self.requests.get(index).and_then(RequestDraft::folder_path)
     }
 
+    #[allow(dead_code)]
     pub fn set_request_organization(
         &mut self,
         index: usize,
@@ -217,6 +221,7 @@ impl AppState {
         true
     }
 
+    #[allow(dead_code)]
     pub fn set_selected_request_organization(&mut self, name: &str, folder_path: &str) -> bool {
         let Some(request) = self.selected_request_mut() else {
             return false;
