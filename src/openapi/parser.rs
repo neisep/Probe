@@ -58,15 +58,18 @@ fn parse_openapi3(spec: &OpenAPI) -> Result<Vec<ImportedOperation>, OpenApiError
 
             let url = format!("{}{}", base_url, path);
 
+            let mut seen = std::collections::HashSet::new();
             let query_params: Vec<(String, String)> = operation
                 .parameters
                 .iter()
+                .chain(path_item.parameters.iter())
                 .filter_map(|p| match p {
                     ReferenceOr::Item(Parameter::Query { parameter_data, .. }) => {
                         Some((parameter_data.name.clone(), String::new()))
                     }
                     _ => None,
                 })
+                .filter(|(k, _)| seen.insert(k.clone()))
                 .collect();
 
             let auth_hint = resolve_auth_hint3(operation, spec);
@@ -198,6 +201,7 @@ struct Swagger2Info {
 
 #[derive(Debug, Deserialize, Default)]
 struct Swagger2PathItem {
+    parameters: Option<Vec<Swagger2Parameter>>,
     get: Option<Swagger2Operation>,
     post: Option<Swagger2Operation>,
     put: Option<Swagger2Operation>,
@@ -221,6 +225,12 @@ struct Swagger2Parameter {
     #[serde(rename = "in")]
     location: String,
     name: String,
+    schema: Option<Swagger2Schema>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Swagger2Schema {
+    example: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -283,13 +293,14 @@ fn parse_swagger2(raw: &Value) -> Result<Vec<ImportedOperation>, OpenApiError> {
 
             let url = format!("{}{}", base_url, path);
 
-            let query_params: Vec<(String, String)> = operation
-                .parameters
-                .as_deref()
-                .unwrap_or(&[])
+            let path_level = path_item.parameters.as_deref().unwrap_or(&[]);
+            let op_level = operation.parameters.as_deref().unwrap_or(&[]);
+            let mut seen = std::collections::HashSet::new();
+            let query_params: Vec<(String, String)> = op_level
                 .iter()
+                .chain(path_level.iter())
                 .filter(|p| p.location == "query")
-                .map(|p| (p.name.clone(), String::new()))
+                .filter_map(|p| seen.insert(p.name.clone()).then(|| (p.name.clone(), String::new())))
                 .collect();
 
             let auth_hint =
@@ -303,12 +314,19 @@ fn parse_swagger2(raw: &Value) -> Result<Vec<ImportedOperation>, OpenApiError> {
                 url,
                 query_params,
                 auth_hint,
-                body_example: None,
+                body_example: extract_body_example2(operation),
             });
         }
     }
 
     Ok(ops)
+}
+
+fn extract_body_example2(operation: &Swagger2Operation) -> Option<String> {
+    let params = operation.parameters.as_deref()?;
+    let body = params.iter().find(|p| p.location == "body")?;
+    let example = body.schema.as_ref()?.example.as_ref()?;
+    serde_json::to_string_pretty(example).ok()
 }
 
 fn resolve_auth_hint2(
@@ -487,6 +505,74 @@ paths:
         assert_eq!(ops.len(), 1);
         assert_eq!(ops[0].import_key, "GET:/health");
         assert_eq!(ops[0].url, "https://api.example.com/health");
+    }
+
+    #[test]
+    fn path_level_params_merged_openapi3() {
+        let spec = r#"{
+  "openapi": "3.0.0",
+  "info": { "title": "T", "version": "1" },
+  "servers": [{ "url": "https://api.example.com" }],
+  "paths": {
+    "/search": {
+      "parameters": [
+        { "name": "format", "in": "query", "schema": { "type": "string" } }
+      ],
+      "get": {
+        "operationId": "searchGet",
+        "parameters": [
+          { "name": "q", "in": "query", "schema": { "type": "string" } }
+        ],
+        "responses": {}
+      },
+      "post": {
+        "operationId": "searchPost",
+        "parameters": [],
+        "responses": {}
+      }
+    }
+  }
+}"#;
+        let ops = parse_spec(spec).expect("parse");
+        let get = ops.iter().find(|o| o.import_key == "GET:/search").expect("GET");
+        assert!(get.query_params.iter().any(|(k, _)| k == "q"), "op-level param missing");
+        assert!(get.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing");
+        let post = ops.iter().find(|o| o.import_key == "POST:/search").expect("POST");
+        assert!(post.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing on POST");
+    }
+
+    #[test]
+    fn path_level_params_merged_swagger2() {
+        let spec = r#"{
+  "swagger": "2.0",
+  "info": { "title": "T", "version": "1" },
+  "host": "api.example.com",
+  "paths": {
+    "/search": {
+      "parameters": [
+        { "name": "format", "in": "query", "type": "string" }
+      ],
+      "get": {
+        "operationId": "searchGet",
+        "parameters": [
+          { "name": "q", "in": "query", "type": "string" }
+        ],
+        "responses": {}
+      },
+      "post": {
+        "operationId": "searchPost",
+        "parameters": [],
+        "responses": {}
+      }
+    }
+  }
+}"#;
+        let ops = parse_spec(spec).expect("parse");
+        let get = ops.iter().find(|o| o.import_key == "GET:/search").expect("GET");
+        assert!(get.query_params.iter().any(|(k, _)| k == "q"), "op-level param missing");
+        assert!(get.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing");
+        let post = ops.iter().find(|o| o.import_key == "POST:/search").expect("POST");
+        assert!(post.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing on POST");
     }
 
     #[test]

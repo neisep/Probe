@@ -1,10 +1,10 @@
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
-use oauth2::{
-    AuthUrl, ClientId, ClientSecret, DeviceAuthorizationUrl, Scope, TokenResponse, TokenUrl,
-};
+use oauth2::{AuthUrl, ClientId, ClientSecret, DeviceAuthorizationUrl, Scope, TokenUrl};
 
-use crate::oauth::{now_unix, FlowKind, Token};
+use crate::oauth::{FlowKind, Token};
+
+use super::{build_cached_token, collect_extra_params};
 
 #[derive(Debug, Clone)]
 pub struct DeviceCodeConfig {
@@ -53,17 +53,8 @@ where
     for scope in &config.scopes {
         device_req = device_req.add_scope(Scope::new(scope.clone()));
     }
-    if let Some(audience) = &config.audience {
-        device_req = device_req.add_extra_param("audience", audience.clone());
-    }
-    if let Some(resource) = &config.resource {
-        device_req = device_req.add_extra_param("resource", resource.clone());
-    }
-    for (key, value) in &config.extra_token_params {
-        let key = key.trim();
-        if !key.is_empty() {
-            device_req = device_req.add_extra_param(key, value.clone());
-        }
+    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_token_params) {
+        device_req = device_req.add_extra_param(k, v);
     }
 
     let device_response: oauth2::StandardDeviceAuthorizationResponse =
@@ -97,24 +88,7 @@ where
         }
     };
 
-    let now = now_unix();
-    let expires_at = token_response
-        .expires_in()
-        .map(|d| now.saturating_add(d.as_secs() as i64))
-        .unwrap_or_else(|| now.saturating_add(3600));
-    let scopes = token_response
-        .scopes()
-        .map(|s| s.iter().map(|sc| sc.to_string()).collect())
-        .unwrap_or_else(|| config.scopes.clone());
-
-    let token = Token {
-        flow: FlowKind::DeviceCode,
-        access_token: token_response.access_token().secret().clone(),
-        refresh_token: token_response.refresh_token().map(|rt| rt.secret().clone()),
-        expires_at,
-        obtained_at: now,
-        scopes,
-    };
+    let token = build_cached_token(&token_response, FlowKind::DeviceCode, &config.scopes, None);
 
     on_event(DeviceCodeEvent::Completed(token));
 }

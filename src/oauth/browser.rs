@@ -7,14 +7,17 @@ use url::form_urlencoded;
 
 use super::OAuthError;
 
+const LOOPBACK_BIND_ADDR: &str = "127.0.0.1:0";
+const LOOPBACK_READ_BUF_SIZE: usize = 4096;
+
 pub struct LoopbackListener {
     listener: TcpListener,
-    port: u16,
+    pub(crate) port: u16,
 }
 
 impl LoopbackListener {
     pub async fn bind() -> Result<Self, OAuthError> {
-        let addr: SocketAddr = "127.0.0.1:0".parse().expect("valid socket addr");
+        let addr: SocketAddr = LOOPBACK_BIND_ADDR.parse().expect("valid socket addr");
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|e| OAuthError::Browser(format!("bind failed: {e}")))?;
@@ -23,10 +26,6 @@ impl LoopbackListener {
             .map_err(|e| OAuthError::Browser(format!("local_addr failed: {e}")))?
             .port();
         Ok(Self { listener, port })
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     pub fn redirect_uri(&self, path: &str) -> String {
@@ -41,7 +40,7 @@ impl LoopbackListener {
             .map_err(|e| OAuthError::Browser(format!("accept failed: {e}")))?;
 
         const MAX_REQUEST_SIZE: usize = 64 * 1024;
-        let mut buf = vec![0u8; 4096];
+        let mut buf = vec![0u8; LOOPBACK_READ_BUF_SIZE];
         let mut total = 0usize;
         loop {
             let n = stream
@@ -123,7 +122,7 @@ mod tests {
     #[tokio::test]
     async fn loopback_parses_query_and_writes_200() {
         let listener = LoopbackListener::bind().await.unwrap();
-        let port = listener.port();
+        let port = listener.port;
         assert!(listener.redirect_uri("/cb").starts_with("http://127.0.0.1:"));
 
         let server = tokio::spawn(async move { listener.accept_once().await });
@@ -152,7 +151,7 @@ mod tests {
     #[tokio::test]
     async fn loopback_handles_empty_query() {
         let listener = LoopbackListener::bind().await.unwrap();
-        let port = listener.port();
+        let port = listener.port;
         let server = tokio::spawn(async move { listener.accept_once().await });
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

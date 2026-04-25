@@ -264,6 +264,34 @@ impl FileStorage {
         self.delete_internal(RESPONSES_DIR, id)
     }
 
+    /// Delete any `.http` files under `collections/` whose relative path is not in `keep`.
+    pub fn delete_stale_requests(
+        &self,
+        keep: &std::collections::BTreeSet<String>,
+    ) -> Result<(), PersistenceError> {
+        let existing = self.list_requests()?;
+        for file in existing {
+            if !keep.contains(&file.relative_path) {
+                let _ = self.delete_request(&file.relative_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete response and response-preview entries whose ID is not in `keep`.
+    pub fn delete_stale_response_ids(&self, keep: &[String]) -> Result<(), PersistenceError> {
+        let keep_set: std::collections::BTreeSet<&str> =
+            keep.iter().map(String::as_str).collect();
+        let existing = self.list_response_ids()?;
+        for id in existing {
+            if !keep_set.contains(id.as_str()) {
+                let _ = self.delete_internal(RESPONSES_DIR, &id);
+                let _ = self.delete_internal(RESPONSE_PREVIEWS_DIR, &id);
+            }
+        }
+        Ok(())
+    }
+
     pub fn save_response_preview(&self, preview: &ResponsePreview) -> Result<(), PersistenceError> {
         let existing = self
             .read_internal_json::<StoredResponsePreview>(RESPONSE_PREVIEWS_DIR, &preview.id)

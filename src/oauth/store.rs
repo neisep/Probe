@@ -225,10 +225,11 @@ fn validate_key(key: &str) -> Result<(), OAuthError> {
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), OAuthError> {
     let tmp = path.with_extension("tmp");
     let mut f = fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    let _ = f.sync_all();
-    fs::rename(&tmp, path)?;
-    Ok(())
+    let result = f.write_all(data).and_then(|_| f.sync_all()).and_then(|_| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(result?)
 }
 
 #[cfg(test)]

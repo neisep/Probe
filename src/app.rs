@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::openapi::{MergePreview, compute_merge, parse_spec};
+use crate::openapi::{MergePreview, OpenApiError, compute_merge, parse_spec};
 use crate::openapi::source::fetch_url;
 use crate::persistence::{EnvFile, FileStorage, RequestFile};
 use crate::runtime::{
@@ -24,6 +24,16 @@ use crate::ui::{request_preview_modal, shell};
 use serde::{Deserialize, Serialize};
 
 const WORKSPACE_BUNDLE_FORMAT_VERSION: u32 = 1;
+
+#[derive(Serialize)]
+struct WorkspaceBundleRef<'a> {
+    format_version: u32,
+    requests: &'a Vec<crate::state::RequestDraft>,
+    responses: &'a Vec<crate::state::ResponseSummary>,
+    environments: &'a Vec<crate::state::Environment>,
+    active_environment: Option<usize>,
+    ui: &'a crate::state::UIState,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct WorkspaceBundle {
@@ -68,6 +78,12 @@ struct PendingOpenApiImport {
     merged: Vec<crate::state::RequestDraft>,
 }
 
+struct PendingOAuthAuth {
+    rx: std::sync::mpsc::Receiver<Result<Option<crate::oauth::middleware::AttachmentHeader>, crate::oauth::OAuthError>>,
+    prepared_request: AsyncRequest,
+    request_index: usize,
+}
+
 #[derive(Debug, Clone)]
 struct PendingRequestPreview {
     preview: request_preview_modal::RequestPreviewData,
@@ -85,6 +101,8 @@ pub struct ProbeApp {
     pending_workspace_import: Option<PendingWorkspaceImport>,
     pending_request_preview: Option<PendingRequestPreview>,
     pending_openapi_import: Option<PendingOpenApiImport>,
+    pending_openapi_fetch: Option<(String, std::sync::mpsc::Receiver<Result<String, OpenApiError>>)>,
+    pending_oauth_auth: Option<PendingOAuthAuth>,
     openapi_url_input: String,
     show_openapi_url_dialog: bool,
     theme_installed: bool,
@@ -116,6 +134,8 @@ impl ProbeApp {
                     pending_workspace_import: None,
                     pending_request_preview: None,
                     pending_openapi_import: None,
+                    pending_openapi_fetch: None,
+                    pending_oauth_auth: None,
                     openapi_url_input: String::new(),
                     show_openapi_url_dialog: false,
                     theme_installed: false,
@@ -137,6 +157,8 @@ impl ProbeApp {
                 pending_workspace_import: None,
                 pending_request_preview: None,
                 pending_openapi_import: None,
+                pending_openapi_fetch: None,
+                pending_oauth_auth: None,
                 openapi_url_input: String::new(),
                 show_openapi_url_dialog: false,
                 theme_installed: false,
@@ -153,6 +175,8 @@ impl ProbeApp {
                 pending_workspace_import: None,
                 pending_request_preview: None,
                 pending_openapi_import: None,
+                pending_openapi_fetch: None,
+                pending_oauth_auth: None,
                 openapi_url_input: String::new(),
                 show_openapi_url_dialog: false,
                 theme_installed: false,
@@ -171,6 +195,8 @@ impl ProbeApp {
                 pending_workspace_import: None,
                 pending_request_preview: None,
                 pending_openapi_import: None,
+                pending_openapi_fetch: None,
+                pending_oauth_auth: None,
                 openapi_url_input: String::new(),
                 show_openapi_url_dialog: false,
                 theme_installed: false,
@@ -380,16 +406,7 @@ impl ProbeApp {
         }
         self.show_openapi_url_dialog = false;
         self.status = format!("Fetching {url}…");
-
-        let text = match fetch_url(&url) {
-            Ok(t) => t,
-            Err(e) => {
-                self.status = format!("OpenAPI fetch failed: {e}");
-                return;
-            }
-        };
-
-        self.apply_openapi_text(&text, url);
+        self.pending_openapi_fetch = Some((url.clone(), fetch_url(&url)));
     }
 
     fn apply_openapi_text(&mut self, text: &str, source: String) {
@@ -517,6 +534,7 @@ impl ProbeApp {
         self.pending_request.is_none()
             && self.pending_workspace_import.is_none()
             && self.pending_request_preview.is_none()
+            && self.pending_oauth_auth.is_none()
     }
 
     fn preview_selected_request(&mut self) {
@@ -566,8 +584,9 @@ impl ProbeApp {
                 };
                 if request.attach_oauth {
                     if let Some(env_name) = self.state.active_environment_name() {
+                        use crate::oauth::middleware::AuthResolution;
                         match crate::oauth::middleware::resolve_authorization(env_name) {
-                            Ok(Some(header_value)) => {
+                            AuthResolution::Ready(Ok(Some(header_value))) => {
                                 let already_set = prepared_request
                                     .headers
                                     .iter()
@@ -578,9 +597,18 @@ impl ProbeApp {
                                         .push((header_value.name, header_value.value));
                                 }
                             }
-                            Ok(None) => {}
-                            Err(error) => {
+                            AuthResolution::Ready(Ok(None)) => {}
+                            AuthResolution::Ready(Err(error)) => {
                                 self.status = format!("OAuth middleware: {error}");
+                                return;
+                            }
+                            AuthResolution::Refreshing(rx) => {
+                                self.status = "OAuth: refreshing token…".to_owned();
+                                self.pending_oauth_auth = Some(PendingOAuthAuth {
+                                    rx,
+                                    prepared_request,
+                                    request_index,
+                                });
                                 return;
                             }
                         }
@@ -675,16 +703,6 @@ impl ProbeApp {
             return;
         };
 
-        // Mirror the in-memory request list to the collections/ tree.
-        // Simple strategy: wipe the collections dir, then write every request as .http.
-        let collections_root = storage.base_dir().join("collections");
-        if collections_root.exists() {
-            if let Err(error) = fs::remove_dir_all(&collections_root) {
-                self.status = format!("Save failed: {error}");
-                return;
-            }
-        }
-
         let mut used_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
         for (index, request) in self.state.requests.iter().enumerate() {
             let relative_path = reserve_request_relative_path(request, index, &mut used_paths);
@@ -697,21 +715,15 @@ impl ProbeApp {
                 return;
             }
         }
+        if let Err(error) = storage.delete_stale_requests(&used_paths) {
+            self.status = format!("Save failed: {error}");
+            return;
+        }
 
         let env_file = build_env_file(&self.state);
         if let Err(error) = storage.save_env_file(&env_file) {
             self.status = format!("Save failed: {error}");
             return;
-        }
-
-        for dir in ["responses", "response_previews"] {
-            let path = storage.base_dir().join(".probe").join(dir);
-            if path.exists() {
-                if let Err(error) = fs::remove_dir_all(&path) {
-                    self.status = format!("Save failed: {error}");
-                    return;
-                }
-            }
         }
 
         let mut response_ids = Vec::new();
@@ -777,6 +789,10 @@ impl ProbeApp {
             }
 
             response_ids.push(response_id);
+        }
+        if let Err(error) = storage.delete_stale_response_ids(&response_ids) {
+            self.status = format!("Save failed: {error}");
+            return;
         }
 
         let selected_request_id = self
@@ -863,6 +879,83 @@ impl ProbeApp {
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
     }
+
+    fn poll_pending_openapi_fetch(&mut self) {
+        let Some((url, rx)) = self.pending_openapi_fetch.take() else {
+            return;
+        };
+        match rx.try_recv() {
+            Ok(Ok(text)) => {
+                self.apply_openapi_text(&text, url);
+            }
+            Ok(Err(e)) => {
+                self.status = format!("OpenAPI fetch failed: {e}");
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.pending_openapi_fetch = Some((url, rx));
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status = "OpenAPI fetch: internal error (channel closed)".to_owned();
+            }
+        }
+    }
+
+    fn poll_pending_oauth_auth(&mut self, ctx: &egui::Context) {
+        let Some(pending) = self.pending_oauth_auth.take() else {
+            return;
+        };
+        match pending.rx.try_recv() {
+            Ok(result) => {
+                let mut prepared_request = pending.prepared_request;
+                match result {
+                    Ok(Some(header_value)) => {
+                        let already_set = prepared_request
+                            .headers
+                            .iter()
+                            .any(|(name, _)| name.eq_ignore_ascii_case(&header_value.name));
+                        if !already_set {
+                            prepared_request
+                                .headers
+                                .push((header_value.name, header_value.value));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        self.status = format!("OAuth refresh failed: {error}");
+                        return;
+                    }
+                }
+                let Some(runtime) = &self.runtime else {
+                    self.status = "Runtime unavailable".to_owned();
+                    return;
+                };
+                let pending_request_context = PendingRequestContext {
+                    request_id: AppState::request_id_for_index(pending.request_index),
+                    method: prepared_request.method.clone(),
+                    url: prepared_request.url.clone(),
+                    headers: prepared_request.headers.clone(),
+                };
+                match runtime.submit_blocking(prepared_request) {
+                    Ok(id) => {
+                        self.pending_request = Some(id);
+                        self.pending_request_context = Some(pending_request_context);
+                        self.status = format!("Submitted request {id}");
+                        self.save_snapshot();
+                    }
+                    Err(error) => {
+                        self.status = format!("Submit error: {error}");
+                    }
+                }
+                ctx.request_repaint();
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                self.pending_oauth_auth = Some(pending);
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.status = "OAuth refresh: internal error (channel closed)".to_owned();
+            }
+        }
+    }
 }
 
 impl Default for ProbeApp {
@@ -938,7 +1031,13 @@ impl eframe::App for ProbeApp {
             }
         }
 
-        if self.pending_request.is_some() {
+        self.poll_pending_openapi_fetch();
+        self.poll_pending_oauth_auth(ui.ctx());
+
+        if self.pending_request.is_some()
+            || self.pending_openapi_fetch.is_some()
+            || self.pending_oauth_auth.is_some()
+        {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
 
@@ -1281,95 +1380,6 @@ fn active_resolution_values(state: &AppState) -> ResolutionValues {
     state.active_variables().cloned().unwrap_or_default()
 }
 
-fn build_request_preview_from_prepared_request(
-    request: &crate::state::RequestDraft,
-    prepared_request: &AsyncRequest,
-) -> request_preview_modal::RequestPreviewData {
-    request_preview_modal::RequestPreviewData {
-        request_name: preview_request_name(
-            request,
-            &prepared_request.method,
-            &prepared_request.url,
-        ),
-        method: prepared_request.method.clone(),
-        url: prepared_request.url.clone(),
-        query_params: preview_query_params(&prepared_request.url),
-        headers: prepared_request.headers.clone(),
-        body: preview_body_from_bytes(prepared_request.body.as_deref()),
-        issue: None,
-        can_send: true,
-    }
-}
-
-fn build_request_preview_from_error(
-    request: &crate::state::RequestDraft,
-    error: &ResolutionError,
-) -> request_preview_modal::RequestPreviewData {
-    request_preview_modal::RequestPreviewData {
-        request_name: preview_request_name(request, &request.method, &request.url),
-        method: request.method.clone(),
-        url: request.url.clone(),
-        query_params: request.query_params.clone(),
-        headers: request.headers.clone(),
-        body: preview_body_from_text(request.body.as_deref()),
-        issue: Some(request_preview_modal::RequestPreviewIssue {
-            summary: error.to_string(),
-            target: error.target.clone(),
-            placeholder: error.placeholder.clone(),
-            details: error.details.clone(),
-        }),
-        can_send: false,
-    }
-}
-
-fn preview_request_name(
-    request: &crate::state::RequestDraft,
-    fallback_method: &str,
-    fallback_url: &str,
-) -> String {
-    let fallback = format!("{} {}", fallback_method.trim(), fallback_url.trim())
-        .trim()
-        .to_owned();
-    normalize_request_name(&request.name).unwrap_or_else(|| {
-        if fallback.is_empty() {
-            "Request preview".to_owned()
-        } else {
-            fallback
-        }
-    })
-}
-
-fn preview_query_params(url: &str) -> Vec<(String, String)> {
-    reqwest::Url::parse(url)
-        .ok()
-        .map(|url| {
-            url.query_pairs()
-                .map(|(name, value)| (name.into_owned(), value.into_owned()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn preview_body_from_bytes(body: Option<&[u8]>) -> request_preview_modal::RequestPreviewBody {
-    match body {
-        None => request_preview_modal::RequestPreviewBody::Empty,
-        Some(body) if body.is_empty() => request_preview_modal::RequestPreviewBody::Empty,
-        Some(body) => match std::str::from_utf8(body) {
-            Ok(text) => request_preview_modal::RequestPreviewBody::Text(text.to_owned()),
-            Err(_) => request_preview_modal::RequestPreviewBody::Binary {
-                size_bytes: body.len(),
-            },
-        },
-    }
-}
-
-fn preview_body_from_text(body: Option<&str>) -> request_preview_modal::RequestPreviewBody {
-    match body {
-        None => request_preview_modal::RequestPreviewBody::Empty,
-        Some(body) if body.is_empty() => request_preview_modal::RequestPreviewBody::Empty,
-        Some(body) => request_preview_modal::RequestPreviewBody::Text(body.to_owned()),
-    }
-}
 
 fn preview_workspace_import(state: &AppState) -> WorkspaceImportPreview {
     WorkspaceImportPreview {
@@ -1384,7 +1394,7 @@ fn preview_workspace_import(state: &AppState) -> WorkspaceImportPreview {
 
 fn backup_workspace(state: &AppState) -> Result<PathBuf, String> {
     let json = workspace_bundle_to_json(state)?;
-    let backup_dir = PathBuf::from("./data/backups");
+    let backup_dir = PathBuf::from(crate::oauth::DATA_DIR).join("backups");
     fs::create_dir_all(&backup_dir).map_err(|error| {
         format!(
             "could not create backup directory {}: {error}",
@@ -1402,7 +1412,15 @@ fn backup_workspace(state: &AppState) -> Result<PathBuf, String> {
 }
 
 fn workspace_bundle_to_json(state: &AppState) -> Result<String, String> {
-    serde_json::to_string_pretty(&build_workspace_bundle(state)).map_err(|error| error.to_string())
+    let bundle = WorkspaceBundleRef {
+        format_version: WORKSPACE_BUNDLE_FORMAT_VERSION,
+        requests: &state.requests,
+        responses: &state.responses,
+        environments: &state.environments,
+        active_environment: state.active_environment,
+        ui: &state.ui,
+    };
+    serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())
 }
 
 fn workspace_bundle_from_json(json: &str) -> Result<AppState, String> {
@@ -1411,16 +1429,6 @@ fn workspace_bundle_from_json(json: &str) -> Result<AppState, String> {
     state_from_workspace_bundle(bundle)
 }
 
-fn build_workspace_bundle(state: &AppState) -> WorkspaceBundle {
-    WorkspaceBundle {
-        format_version: WORKSPACE_BUNDLE_FORMAT_VERSION,
-        requests: state.requests.clone(),
-        responses: state.responses.clone(),
-        environments: state.environments.clone(),
-        active_environment: state.active_environment,
-        ui: state.ui.clone(),
-    }
-}
 
 fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, String> {
     if bundle.format_version != WORKSPACE_BUNDLE_FORMAT_VERSION {
@@ -1574,7 +1582,7 @@ fn prepare_request_draft(
         resolved_query_params.push((resolved_name, resolved_value));
     }
     let resolved_auth = resolve_request_auth(&request.auth, resolution_values)?;
-    apply_auth_headers(&mut resolved_headers, &resolved_auth.headers)?;
+    apply_auth_headers(&mut resolved_headers, resolved_auth.headers)?;
     resolved_query_params.extend(resolved_auth.query_params);
 
     Ok(AsyncRequest {
@@ -1688,12 +1696,12 @@ fn resolve_request_auth(
 
 fn apply_auth_headers(
     existing_headers: &mut Vec<(String, String)>,
-    auth_headers: &[(String, String)],
+    auth_headers: Vec<(String, String)>,
 ) -> Result<(), ResolutionError> {
-    for (auth_name, _auth_value) in auth_headers {
+    for (auth_name, _) in &auth_headers {
         if existing_headers
             .iter()
-            .any(|(name, _value)| name.eq_ignore_ascii_case(auth_name))
+            .any(|(name, _)| name.eq_ignore_ascii_case(auth_name))
         {
             return Err(invalid_request_error(
                 "auth",
@@ -1702,7 +1710,7 @@ fn apply_auth_headers(
         }
     }
 
-    existing_headers.extend(auth_headers.iter().cloned());
+    existing_headers.extend(auth_headers);
     Ok(())
 }
 
@@ -1792,14 +1800,11 @@ fn create_storage() -> Option<FileStorage> {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_request_preview_from_error, build_request_preview_from_prepared_request,
         build_request_url, prepare_request_draft, workspace_bundle_from_json,
         workspace_bundle_to_json,
     };
-    use crate::runtime::{AsyncRequest, ResolutionError, ResolutionErrorKind};
     use crate::state::request::{ApiKeyLocation, RequestAuth};
     use crate::state::{Environment, RequestDraft, View};
-    use crate::ui::request_preview_modal::RequestPreviewBody;
     use std::collections::BTreeMap;
 
     #[test]
@@ -1975,64 +1980,6 @@ mod tests {
             .expect_err("unsupported workspace bundle version should fail");
 
         assert!(error.contains("unsupported workspace format version"));
-    }
-
-    #[test]
-    fn request_preview_from_prepared_request_uses_resolved_values() {
-        let mut request = RequestDraft::default_request();
-        request.set_request_name("Create widget");
-        let prepared_request = AsyncRequest {
-            method: "POST".to_owned(),
-            url: "https://example.com/items?page=1&search=hello%20world".to_owned(),
-            headers: vec![("Authorization".to_owned(), "Bearer secret".to_owned())],
-            body: Some(br#"{"ok":true}"#.to_vec()),
-        };
-
-        let preview = build_request_preview_from_prepared_request(&request, &prepared_request);
-
-        assert_eq!(preview.request_name, "Create widget");
-        assert_eq!(preview.query_params.len(), 2);
-        assert!(preview.can_send);
-        assert!(preview.issue.is_none());
-        match preview.body {
-            RequestPreviewBody::Text(body) => assert_eq!(body, r#"{"ok":true}"#),
-            RequestPreviewBody::Empty | RequestPreviewBody::Binary { .. } => {
-                panic!("prepared preview should keep the text body")
-            }
-        }
-    }
-
-    #[test]
-    fn request_preview_from_error_captures_issue_context() {
-        let mut request = RequestDraft::default_request();
-        request.set_request_name("Broken request");
-        request.set_url("https://example.com/{{missing}}");
-        request.query_params = vec![("search".to_owned(), "{{missing}}".to_owned())];
-        request.body = Some("{{missing}}".to_owned());
-        let error = ResolutionError {
-            kind: ResolutionErrorKind::MissingValue,
-            target: "url".to_owned(),
-            placeholder: Some("missing".to_owned()),
-            details: None,
-        };
-
-        let preview = build_request_preview_from_error(&request, &error);
-
-        assert_eq!(preview.request_name, "Broken request");
-        assert!(!preview.can_send);
-        assert_eq!(preview.query_params, request.query_params);
-        match preview.body {
-            RequestPreviewBody::Text(body) => assert_eq!(body, "{{missing}}"),
-            RequestPreviewBody::Empty | RequestPreviewBody::Binary { .. } => {
-                panic!("error preview should show the editable request body")
-            }
-        }
-        let issue = preview
-            .issue
-            .expect("preview should include the blocking issue");
-        assert_eq!(issue.target, "url");
-        assert_eq!(issue.placeholder.as_deref(), Some("missing"));
-        assert!(issue.summary.contains("unresolved placeholder"));
     }
 
     #[test]

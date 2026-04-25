@@ -1,6 +1,6 @@
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use eframe::egui;
 
@@ -8,6 +8,7 @@ use crate::oauth::config::slugify_env_id;
 use crate::oauth::flows::auth_code::{self, AuthCodeConfig};
 use crate::oauth::flows::client_credentials::{self, ClientCredentialsConfig};
 use crate::oauth::flows::device_code::{self, DeviceCodeConfig, DeviceCodeEvent};
+use crate::oauth::middleware;
 use crate::oauth::{FlowKind, OAuthConfig, Token, TokenStore, storage, token_store};
 use crate::state::AppState;
 
@@ -37,6 +38,8 @@ struct OAuthPanelState {
     in_flight: Option<(FlowKind, mpsc::Receiver<FlowEvent>)>,
     device_verification: Option<DeviceVerification>,
     status_message: Option<String>,
+    cached_tokens: [Option<Token>; 3],
+    dirty_since: Option<Instant>,
 }
 
 impl Default for OAuthPanelState {
@@ -49,7 +52,17 @@ impl Default for OAuthPanelState {
             in_flight: None,
             device_verification: None,
             status_message: None,
+            cached_tokens: Default::default(),
+            dirty_since: None,
         }
+    }
+}
+
+fn flow_index(flow: FlowKind) -> usize {
+    match flow {
+        FlowKind::AuthCodePkce => 0,
+        FlowKind::ClientCredentials => 1,
+        FlowKind::DeviceCode => 2,
     }
 }
 
@@ -113,15 +126,32 @@ fn sync_if_env_changed(panel: &mut OAuthPanelState, env_name: &str, env_id: &str
     panel.status_message = None;
     panel.in_flight = None;
     panel.device_verification = None;
+    panel.cached_tokens = [
+        token_store().get(env_id, FlowKind::AuthCodePkce.as_str()).ok().flatten(),
+        token_store().get(env_id, FlowKind::ClientCredentials.as_str()).ok().flatten(),
+        token_store().get(env_id, FlowKind::DeviceCode.as_str()).ok().flatten(),
+    ];
 }
 
 fn persist_if_changed(panel: &mut OAuthPanelState) {
     if panel.config == panel.last_saved {
+        panel.dirty_since = None;
         return;
     }
+    let since = *panel.dirty_since.get_or_insert_with(Instant::now);
+    if since.elapsed() < Duration::from_millis(500) {
+        return;
+    }
+    let injection_changed = panel.config.injection != panel.last_saved.injection;
     let Some(storage) = storage() else { return };
     match storage.save_oauth_config(&panel.env_id, &panel.config) {
-        Ok(()) => panel.last_saved = panel.config.clone(),
+        Ok(()) => {
+            panel.last_saved = panel.config.clone();
+            panel.dirty_since = None;
+            if injection_changed {
+                middleware::invalidate(&panel.env_id);
+            }
+        }
         Err(error) => panel.status_message = Some(format!("Save failed: {error}")),
     }
 }
@@ -167,6 +197,8 @@ fn poll_flow_events(panel: &mut OAuthPanelState) {
             FlowEvent::Completed(token) => {
                 let scopes_len = token.scopes.len();
                 let result = token_store().put(&panel.env_id, flow.as_str(), &token);
+                middleware::invalidate(&panel.env_id);
+                panel.cached_tokens[flow_index(flow)] = Some(token);
                 panel.status_message = Some(match result {
                     Ok(()) => format!("Token acquired ({scopes_len} scopes)."),
                     Err(error) => format!("Token acquired but save failed: {error}"),
@@ -452,7 +484,7 @@ fn render_action_row(
     flow: FlowKind,
     ready: bool,
 ) -> (bool, bool) {
-    let stored = token_store().get(&panel.env_id, flow.as_str()).ok().flatten();
+    let stored = panel.cached_tokens[flow_index(flow)].as_ref();
     let in_flight = panel
         .in_flight
         .as_ref()
@@ -460,7 +492,7 @@ fn render_action_row(
         .unwrap_or(false);
 
     ui.add_space(6.0);
-    render_token_pill(ui, stored.as_ref(), in_flight);
+    render_token_pill(ui, stored, in_flight);
 
     let get_label = if in_flight { "Getting token…" } else { "Get token" };
     ui.horizontal(|ui| {
@@ -477,7 +509,11 @@ fn render_action_row(
 
 fn reset_token(panel: &mut OAuthPanelState, flow: FlowKind) {
     match token_store().delete(&panel.env_id, flow.as_str()) {
-        Ok(()) => panel.status_message = Some("Token cleared.".into()),
+        Ok(()) => {
+            panel.cached_tokens[flow_index(flow)] = None;
+            middleware::invalidate(&panel.env_id);
+            panel.status_message = Some("Token cleared.".into());
+        }
         Err(error) => panel.status_message = Some(format!("Reset failed: {error}")),
     }
 }
