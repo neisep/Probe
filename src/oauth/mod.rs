@@ -6,11 +6,14 @@ pub mod pkce;
 pub mod store;
 
 use std::sync::OnceLock;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 pub use config::OAuthConfig;
 pub use store::{FileTokenStore, TokenStore};
+#[cfg(feature = "keyring-storage")]
+pub use store::KeyringTokenStore;
 
 use crate::persistence::FileStorage;
 
@@ -18,14 +21,27 @@ pub(crate) const DATA_DIR: &str = "./data";
 
 static STORAGE: OnceLock<Option<FileStorage>> = OnceLock::new();
 
+pub(crate) fn now_unix() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
 pub(crate) fn storage() -> Option<&'static FileStorage> {
     STORAGE
         .get_or_init(|| FileStorage::new(DATA_DIR).ok())
         .as_ref()
 }
 
+#[cfg(not(feature = "keyring-storage"))]
 pub(crate) fn token_store() -> FileTokenStore {
     FileTokenStore::new(DATA_DIR)
+}
+
+#[cfg(feature = "keyring-storage")]
+pub(crate) fn token_store() -> KeyringTokenStore {
+    KeyringTokenStore
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]

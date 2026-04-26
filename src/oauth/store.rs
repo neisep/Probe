@@ -133,6 +133,83 @@ impl TokenStore for FileTokenStore {
     }
 }
 
+#[cfg(feature = "keyring-storage")]
+pub struct KeyringTokenStore;
+
+#[cfg(feature = "keyring-storage")]
+impl KeyringTokenStore {
+    const SERVICE: &'static str = "probe-oauth";
+
+    fn entry(env_id: &str) -> Result<keyring::Entry, OAuthError> {
+        keyring::Entry::new(Self::SERVICE, env_id)
+            .map_err(|e| OAuthError::Config(format!("keyring entry: {e}")))
+    }
+
+    fn load_env(env_id: &str) -> Result<EnvTokenFile, OAuthError> {
+        let entry = Self::entry(env_id)?;
+        match entry.get_password() {
+            Ok(json) => Ok(serde_json::from_str(&json)?),
+            Err(keyring::Error::NoEntry) => Ok(EnvTokenFile::default()),
+            Err(e) => Err(OAuthError::Config(format!("keyring read: {e}"))),
+        }
+    }
+
+    fn save_env(env_id: &str, file: &EnvTokenFile) -> Result<(), OAuthError> {
+        let entry = Self::entry(env_id)?;
+        if file.tokens.is_empty() {
+            return match entry.delete_credential() {
+                Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+                Err(e) => Err(OAuthError::Config(format!("keyring delete: {e}"))),
+            };
+        }
+        let json = serde_json::to_string(file)?;
+        entry
+            .set_password(&json)
+            .map_err(|e| OAuthError::Config(format!("keyring write: {e}")))
+    }
+}
+
+#[cfg(feature = "keyring-storage")]
+impl TokenStore for KeyringTokenStore {
+    fn get(&self, env_id: &str, flow_id: &str) -> Result<Option<Token>, OAuthError> {
+        validate_key(env_id)?;
+        validate_key(flow_id)?;
+        let file = Self::load_env(env_id)?;
+        Ok(file.tokens.get(flow_id).cloned())
+    }
+
+    fn put(&self, env_id: &str, flow_id: &str, token: &Token) -> Result<(), OAuthError> {
+        validate_key(env_id)?;
+        validate_key(flow_id)?;
+        let mut file = Self::load_env(env_id)?;
+        file.tokens.insert(flow_id.to_owned(), token.clone());
+        Self::save_env(env_id, &file)
+    }
+
+    fn delete(&self, env_id: &str, flow_id: &str) -> Result<(), OAuthError> {
+        validate_key(env_id)?;
+        validate_key(flow_id)?;
+        let mut file = Self::load_env(env_id)?;
+        if file.tokens.remove(flow_id).is_none() {
+            return Ok(());
+        }
+        Self::save_env(env_id, &file)
+    }
+
+    fn delete_env(&self, env_id: &str) -> Result<(), OAuthError> {
+        validate_key(env_id)?;
+        let entry = Self::entry(env_id)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(OAuthError::Config(format!("keyring delete_env: {e}"))),
+        }
+    }
+
+    fn list(&self) -> Result<Vec<(String, String)>, OAuthError> {
+        Ok(Vec::new())
+    }
+}
+
 fn validate_key(key: &str) -> Result<(), OAuthError> {
     if key.is_empty()
         || key.len() > 255
@@ -148,10 +225,11 @@ fn validate_key(key: &str) -> Result<(), OAuthError> {
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), OAuthError> {
     let tmp = path.with_extension("tmp");
     let mut f = fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    let _ = f.sync_all();
-    fs::rename(&tmp, path)?;
-    Ok(())
+    let result = f.write_all(data).and_then(|_| f.sync_all()).and_then(|_| fs::rename(&tmp, path));
+    if result.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(result?)
 }
 
 #[cfg(test)]

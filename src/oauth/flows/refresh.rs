@@ -1,12 +1,11 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
 use oauth2::{
-    AuthUrl, ClientId, ClientSecret, RefreshToken, TokenResponse, TokenUrl,
+    AuthUrl, ClientId, ClientSecret, RefreshToken, TokenUrl,
 };
 
 use crate::oauth::{FlowKind, OAuthError, Token};
+use super::build_cached_token;
 
 #[derive(Debug, Clone)]
 pub struct RefreshConfig {
@@ -42,35 +41,14 @@ pub async fn run(
         .await
         .map_err(|e| OAuthError::Http(format!("refresh failed: {e}")))?;
 
-    let now = now_unix();
-    let expires_at = response
-        .expires_in()
-        .map(|d| now.saturating_add(d.as_secs() as i64))
-        .unwrap_or_else(|| now.saturating_add(3600));
-    let scopes = response
-        .scopes()
-        .map(|s| s.iter().map(|sc| sc.to_string()).collect())
-        .unwrap_or_else(|| fallback_scopes.to_vec());
-
-    Ok(Token {
+    Ok(build_cached_token(
+        &response,
         flow,
-        access_token: response.access_token().secret().clone(),
-        refresh_token: response
-            .refresh_token()
-            .map(|rt| rt.secret().clone())
-            .or_else(|| Some(config.refresh_token.clone())),
-        expires_at,
-        obtained_at: now,
-        scopes,
-    })
+        fallback_scopes,
+        Some(config.refresh_token.as_str()),
+    ))
 }
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 #[cfg(test)]
 mod tests {

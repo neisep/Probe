@@ -19,6 +19,7 @@ pub struct AsyncRequest {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub enum UnresolvedBehavior {
     Error,
     Preserve,
@@ -110,10 +111,12 @@ impl Default for AsyncRequest {
 }
 
 impl AsyncRequest {
+    #[allow(dead_code)]
     pub fn resolve(&self, values: &ResolutionValues) -> Result<Self, ResolutionError> {
         self.resolve_with_behavior(values, UnresolvedBehavior::Error)
     }
 
+    #[allow(dead_code)]
     pub fn resolve_with_behavior(
         &self,
         values: &ResolutionValues,
@@ -262,6 +265,7 @@ impl fmt::Display for ResolutionError {
 
 impl std::error::Error for ResolutionError {}
 
+#[allow(dead_code)]
 pub fn resolve_text(
     target: &str,
     input: &str,

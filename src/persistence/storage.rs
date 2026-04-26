@@ -258,9 +258,38 @@ impl FileStorage {
         self.list_internal_keys(RESPONSES_DIR)
     }
 
+    #[allow(dead_code)]
     pub fn delete_response(&self, id: &str) -> Result<(), PersistenceError> {
         let _ = self.delete_internal(RESPONSE_PREVIEWS_DIR, id);
         self.delete_internal(RESPONSES_DIR, id)
+    }
+
+    /// Delete any `.http` files under `collections/` whose relative path is not in `keep`.
+    pub fn delete_stale_requests(
+        &self,
+        keep: &std::collections::BTreeSet<String>,
+    ) -> Result<(), PersistenceError> {
+        let existing = self.list_requests()?;
+        for file in existing {
+            if !keep.contains(&file.relative_path) {
+                let _ = self.delete_request(&file.relative_path);
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete response and response-preview entries whose ID is not in `keep`.
+    pub fn delete_stale_response_ids(&self, keep: &[String]) -> Result<(), PersistenceError> {
+        let keep_set: std::collections::BTreeSet<&str> =
+            keep.iter().map(String::as_str).collect();
+        let existing = self.list_response_ids()?;
+        for id in existing {
+            if !keep_set.contains(id.as_str()) {
+                let _ = self.delete_internal(RESPONSES_DIR, &id);
+                let _ = self.delete_internal(RESPONSE_PREVIEWS_DIR, &id);
+            }
+        }
+        Ok(())
     }
 
     pub fn save_response_preview(&self, preview: &ResponsePreview) -> Result<(), PersistenceError> {
@@ -324,6 +353,7 @@ impl FileStorage {
         self.read_internal_json(OAUTH_CONFIGS_DIR, env_id)
     }
 
+    #[allow(dead_code)]
     pub fn delete_oauth_config(&self, env_id: &str) -> Result<(), PersistenceError> {
         self.delete_internal(OAUTH_CONFIGS_DIR, env_id)
     }
@@ -370,6 +400,7 @@ impl FileStorage {
         Ok(serde_json::from_str(&text)?)
     }
 
+    #[allow(dead_code)]
     fn delete_internal(&self, category: &str, key: &str) -> Result<(), PersistenceError> {
         let path = self.internal_path(category, key)?;
         if !path.exists() {
@@ -537,6 +568,8 @@ mod tests {
             },
             headers: vec![],
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let file = RequestFile {
             relative_path: "auth/me".to_owned(),

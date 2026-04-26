@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -7,15 +7,18 @@ use url::form_urlencoded;
 
 use super::OAuthError;
 
+const LOOPBACK_BIND_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+const LOOPBACK_READ_BUF_SIZE: usize = 4096;
+
 pub struct LoopbackListener {
     listener: TcpListener,
-    port: u16,
+    pub(crate) port: u16,
 }
 
 impl LoopbackListener {
     pub async fn bind() -> Result<Self, OAuthError> {
-        let addr: SocketAddr = "127.0.0.1:0".parse().expect("valid socket addr");
-        let listener = TcpListener::bind(addr)
+        let listener = TcpListener::bind(LOOPBACK_BIND_ADDR)
             .await
             .map_err(|e| OAuthError::Browser(format!("bind failed: {e}")))?;
         let port = listener
@@ -23,10 +26,6 @@ impl LoopbackListener {
             .map_err(|e| OAuthError::Browser(format!("local_addr failed: {e}")))?
             .port();
         Ok(Self { listener, port })
-    }
-
-    pub fn port(&self) -> u16 {
-        self.port
     }
 
     pub fn redirect_uri(&self, path: &str) -> String {
@@ -40,7 +39,8 @@ impl LoopbackListener {
             .await
             .map_err(|e| OAuthError::Browser(format!("accept failed: {e}")))?;
 
-        let mut buf = vec![0u8; 4096];
+        const MAX_REQUEST_SIZE: usize = 64 * 1024;
+        let mut buf = vec![0u8; LOOPBACK_READ_BUF_SIZE];
         let mut total = 0usize;
         loop {
             let n = stream
@@ -55,7 +55,11 @@ impl LoopbackListener {
                 break;
             }
             if total == buf.len() {
-                buf.resize(buf.len() * 2, 0);
+                let new_len = (buf.len() * 2).min(MAX_REQUEST_SIZE);
+                if new_len == buf.len() {
+                    return Err(OAuthError::Browser("redirect request too large".into()));
+                }
+                buf.resize(new_len, 0);
             }
         }
 
@@ -93,8 +97,12 @@ impl LoopbackListener {
             body.len(),
             body
         );
-        let _ = stream.write_all(response.as_bytes()).await;
-        let _ = stream.shutdown().await;
+        if let Err(e) = stream.write_all(response.as_bytes()).await {
+            tracing::warn!("failed to write OAuth callback response: {e}");
+        }
+        if let Err(e) = stream.shutdown().await {
+            tracing::warn!("failed to shut down OAuth callback stream: {e}");
+        }
 
         Ok(params)
     }
@@ -115,7 +123,7 @@ mod tests {
     #[tokio::test]
     async fn loopback_parses_query_and_writes_200() {
         let listener = LoopbackListener::bind().await.unwrap();
-        let port = listener.port();
+        let port = listener.port;
         assert!(listener.redirect_uri("/cb").starts_with("http://127.0.0.1:"));
 
         let server = tokio::spawn(async move { listener.accept_once().await });
@@ -144,7 +152,7 @@ mod tests {
     #[tokio::test]
     async fn loopback_handles_empty_query() {
         let listener = LoopbackListener::bind().await.unwrap();
-        let port = listener.port();
+        let port = listener.port;
         let server = tokio::spawn(async move { listener.accept_once().await });
 
         let mut stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();

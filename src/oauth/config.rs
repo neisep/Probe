@@ -12,6 +12,8 @@ pub struct OAuthConfig {
     pub client_credentials: ClientCredentialsFields,
     #[serde(default)]
     pub device_code: DeviceCodeFields,
+    #[serde(default)]
+    pub injection: InjectionConfig,
 }
 
 impl OAuthConfig {
@@ -61,7 +63,59 @@ pub struct TokenEndpoint {
     pub client_secret: Option<String>,
 }
 
-fn normalize_optional(value: &str) -> Option<String> {
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InjectionConfig {
+    #[serde(default = "default_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_header_name")]
+    pub header_name: String,
+    #[serde(default = "default_header_prefix")]
+    pub header_prefix: String,
+}
+
+impl Default for InjectionConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_enabled(),
+            header_name: default_header_name(),
+            header_prefix: default_header_prefix(),
+        }
+    }
+}
+
+impl InjectionConfig {
+    pub fn effective_header_name(&self) -> &str {
+        let trimmed = self.header_name.trim();
+        if trimmed.is_empty() {
+            "Authorization"
+        } else {
+            trimmed
+        }
+    }
+
+    pub fn format_header_value(&self, access_token: &str) -> String {
+        let prefix = self.header_prefix.trim();
+        if prefix.is_empty() {
+            access_token.to_owned()
+        } else {
+            format!("{prefix} {access_token}")
+        }
+    }
+}
+
+fn default_enabled() -> bool {
+    true
+}
+
+fn default_header_name() -> String {
+    "Authorization".to_owned()
+}
+
+fn default_header_prefix() -> String {
+    "Bearer".to_owned()
+}
+
+pub(crate) fn normalize_optional(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None
@@ -140,6 +194,10 @@ pub struct DeviceCodeFields {
     pub scopes: String,
     #[serde(default)]
     pub audience: String,
+    #[serde(default)]
+    pub resource: String,
+    #[serde(default)]
+    pub extra_params: Vec<(String, String)>,
 }
 
 impl DeviceCodeFields {
@@ -260,5 +318,58 @@ mod tests {
         assert_eq!(endpoint.token_url, "https://idp.example.com/token");
         assert_eq!(endpoint.client_id, "device");
         assert!(endpoint.client_secret.is_none());
+    }
+
+    #[test]
+    fn injection_config_defaults_to_authorization_bearer_enabled() {
+        let injection = InjectionConfig::default();
+        assert!(injection.enabled);
+        assert_eq!(injection.header_name, "Authorization");
+        assert_eq!(injection.header_prefix, "Bearer");
+    }
+
+    #[test]
+    fn injection_config_formats_bearer_value() {
+        let injection = InjectionConfig::default();
+        assert_eq!(injection.format_header_value("atk"), "Bearer atk");
+        assert_eq!(injection.effective_header_name(), "Authorization");
+    }
+
+    #[test]
+    fn injection_config_empty_prefix_is_raw_token() {
+        let injection = InjectionConfig {
+            enabled: true,
+            header_name: "X-API-Key".into(),
+            header_prefix: "".into(),
+        };
+        assert_eq!(injection.format_header_value("atk"), "atk");
+        assert_eq!(injection.effective_header_name(), "X-API-Key");
+    }
+
+    #[test]
+    fn injection_config_empty_header_name_falls_back_to_authorization() {
+        let injection = InjectionConfig {
+            enabled: true,
+            header_name: "   ".into(),
+            header_prefix: "Bearer".into(),
+        };
+        assert_eq!(injection.effective_header_name(), "Authorization");
+    }
+
+    #[test]
+    fn oauth_config_default_includes_injection_defaults() {
+        let config = OAuthConfig::default();
+        assert!(config.injection.enabled);
+        assert_eq!(config.injection.header_name, "Authorization");
+        assert_eq!(config.injection.header_prefix, "Bearer");
+    }
+
+    #[test]
+    fn legacy_oauth_config_without_injection_deserializes_with_defaults() {
+        let json = r#"{"active_flow":"auth_code_pkce"}"#;
+        let config: OAuthConfig = serde_json::from_str(json).unwrap();
+        assert!(config.injection.enabled);
+        assert_eq!(config.injection.header_name, "Authorization");
+        assert_eq!(config.injection.header_prefix, "Bearer");
     }
 }

@@ -14,6 +14,12 @@ pub fn write_request(draft: &RequestDraft) -> String {
         out.push('\n');
     }
 
+    if let Some(key) = &draft.import_key {
+        out.push_str("# @probe-import-key ");
+        out.push_str(key);
+        out.push('\n');
+    }
+
     let mut directive_basic_auth: Option<(String, String)> = None;
     if let RequestAuth::Basic { username, password } = &draft.auth {
         if username.contains("{{") || password.contains("{{") {
@@ -146,6 +152,8 @@ mod tests {
             auth: RequestAuth::None,
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         assert_eq!(write_request(&draft), "GET https://example.com/ping\n");
     }
@@ -173,6 +181,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         assert!(text.contains("Authorization: Bearer {{API_TOKEN}}\n"));
@@ -192,6 +202,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         assert!(text.contains("Authorization: Basic am9objpzM2NyM3Q=\n"));
@@ -212,6 +224,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         assert!(text.contains("# @probe-auth basic {{USER}}:{{PASS}}\n"));
@@ -233,6 +247,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         assert!(text.contains("X-API-Key: s3cret\n"));
@@ -253,6 +269,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         assert!(
@@ -274,6 +292,8 @@ mod tests {
             },
             headers: vec![("Content-Type".to_owned(), "application/json".to_owned())],
             body: Some("{\"name\":\"jane\"}".to_owned()),
+            attach_oauth: true,
+            import_key: None,
         };
 
         let text = write_request(&draft);
@@ -302,6 +322,8 @@ mod tests {
             },
             headers: Vec::new(),
             body: None,
+            attach_oauth: true,
+            import_key: None,
         };
         let text = write_request(&draft);
         let parsed = parse_request(&text).expect("parse back");

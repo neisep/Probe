@@ -1,12 +1,9 @@
-use std::time::{SystemTime, UNIX_EPOCH};
-
-use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
-use oauth2::{
-    AuthUrl, ClientId, ClientSecret, Scope, TokenResponse, TokenUrl,
-};
+use oauth2::{Scope, TokenUrl};
 
 use crate::oauth::{FlowKind, OAuthError, Token};
+
+use super::{build_basic_client_with_token_only, build_cached_token, collect_extra_params};
 
 #[derive(Debug, Clone)]
 pub struct ClientCredentialsConfig {
@@ -22,28 +19,18 @@ pub struct ClientCredentialsConfig {
 pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> {
     let token_url = TokenUrl::new(config.token_url.clone())
         .map_err(|e| OAuthError::Config(format!("token_url: {e}")))?;
-    let auth_url = AuthUrl::new("http://localhost/".to_owned())
-        .map_err(|e| OAuthError::Config(format!("auth_url placeholder: {e}")))?;
-
-    let client = BasicClient::new(
-        ClientId::new(config.client_id.clone()),
-        Some(ClientSecret::new(config.client_secret.clone())),
-        auth_url,
-        Some(token_url),
-    );
+    let client = build_basic_client_with_token_only(
+        &config.client_id,
+        Some(&config.client_secret),
+        token_url,
+    )?;
 
     let mut request = client.exchange_client_credentials();
     for scope in &config.scopes {
         request = request.add_scope(Scope::new(scope.clone()));
     }
-    if let Some(audience) = &config.audience {
-        request = request.add_extra_param("audience", audience.clone());
-    }
-    if let Some(resource) = &config.resource {
-        request = request.add_extra_param("resource", resource.clone());
-    }
-    for (k, v) in &config.extra_token_params {
-        request = request.add_extra_param(k.clone(), v.clone());
+    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_token_params) {
+        request = request.add_extra_param(k, v);
     }
 
     let response = request
@@ -51,31 +38,7 @@ pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> 
         .await
         .map_err(|e| OAuthError::Http(format!("client credentials token exchange failed: {e}")))?;
 
-    let now = now_unix();
-    let expires_at = response
-        .expires_in()
-        .map(|d| now.saturating_add(d.as_secs() as i64))
-        .unwrap_or_else(|| now.saturating_add(3600));
-    let scopes = response
-        .scopes()
-        .map(|s| s.iter().map(|sc| sc.to_string()).collect())
-        .unwrap_or_else(|| config.scopes.clone());
-
-    Ok(Token {
-        flow: FlowKind::ClientCredentials,
-        access_token: response.access_token().secret().clone(),
-        refresh_token: response.refresh_token().map(|rt| rt.secret().clone()),
-        expires_at,
-        obtained_at: now,
-        scopes,
-    })
-}
-
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
+    Ok(build_cached_token(&response, FlowKind::ClientCredentials, &config.scopes, None))
 }
 
 #[cfg(test)]
