@@ -90,10 +90,6 @@ impl FileStorage {
         Ok(Self { base_dir: base })
     }
 
-    pub fn base_dir(&self) -> &Path {
-        &self.base_dir
-    }
-
     // ---- Request (.http) APIs ---------------------------------------------
 
     pub fn save_request(&self, file: &RequestFile) -> Result<(), PersistenceError> {
@@ -103,30 +99,6 @@ impl FileStorage {
         }
         let text = write_request(&file.request);
         atomic_write(&path, text.as_bytes())
-    }
-
-    pub fn load_request(&self, relative_path: &str) -> Result<RequestFile, PersistenceError> {
-        let path = self.request_path(relative_path)?;
-        if !path.exists() {
-            return Err(PersistenceError::NotFound(path.display().to_string()));
-        }
-        let text = fs::read_to_string(&path)?;
-        let mut request = parse_request(&text)?;
-
-        let normalized = relative_path.trim_matches('/');
-        let (folder, stem) = match normalized.rsplit_once('/') {
-            Some((folder, stem)) => (folder.to_owned(), stem.to_owned()),
-            None => (String::new(), normalized.to_owned()),
-        };
-        request.set_folder_path(&folder);
-        if request.name.trim().is_empty() {
-            request.set_request_name(&stem);
-        }
-
-        Ok(RequestFile {
-            relative_path: normalized.to_owned(),
-            request,
-        })
     }
 
     pub fn delete_request(&self, relative_path: &str) -> Result<(), PersistenceError> {
@@ -577,8 +549,12 @@ mod tests {
         };
         storage.save_request(&file).unwrap();
 
-        let loaded = storage.load_request("auth/me").unwrap();
-        assert_eq!(loaded.relative_path, "auth/me");
+        let loaded = storage
+            .list_requests()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.relative_path == "auth/me")
+            .expect("saved request should be listed");
         assert_eq!(loaded.request.name, "Get user");
         assert_eq!(loaded.request.folder, "auth");
         assert_eq!(
@@ -680,9 +656,13 @@ mod tests {
         let storage = FileStorage::new(&base).unwrap();
 
         for bad in ["", "/abs", "..", "a/..", "a/./b", "a\\b", "a:b"] {
+            let file = RequestFile {
+                relative_path: bad.to_owned(),
+                request: RequestDraft::default_request(),
+            };
             assert!(
                 matches!(
-                    storage.load_request(bad),
+                    storage.save_request(&file),
                     Err(PersistenceError::InvalidPath(_))
                 ),
                 "should reject {bad}"

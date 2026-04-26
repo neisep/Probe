@@ -9,20 +9,12 @@ pub struct RequestPreviewIssue {
 }
 
 #[derive(Debug, Clone)]
-pub enum RequestPreviewBody {
-    Empty,
-    Text(String),
-    Binary { size_bytes: usize },
-}
-
-#[derive(Debug, Clone)]
 pub struct RequestPreviewData {
     pub request_name: String,
     pub method: String,
     pub url: String,
     pub query_params: Vec<(String, String)>,
     pub headers: Vec<(String, String)>,
-    pub body: RequestPreviewBody,
     pub issue: Option<RequestPreviewIssue>,
     pub can_send: bool,
 }
@@ -56,27 +48,6 @@ fn show_pairs(ui: &mut egui::Ui, pairs: &[(String, String)], empty_text: &str, i
                     }
                 });
         });
-}
-
-fn show_body_preview(ui: &mut egui::Ui, body: &RequestPreviewBody) {
-    match body {
-        RequestPreviewBody::Empty => {
-            ui.small("No request body.");
-        }
-        RequestPreviewBody::Text(text) => {
-            let mut preview = text.clone();
-            ui.add(
-                egui::TextEdit::multiline(&mut preview)
-                    .desired_rows(10)
-                    .interactive(false),
-            );
-        }
-        RequestPreviewBody::Binary { size_bytes } => {
-            ui.small(format!(
-                "Request body is binary or not valid UTF-8 ({size_bytes} bytes)."
-            ));
-        }
-    }
 }
 
 pub fn show_request_preview(
@@ -142,9 +113,6 @@ pub fn show_request_preview(
                     "No request headers.",
                     "preview_headers",
                 );
-            });
-            ui.collapsing("Body preview", |ui| {
-                show_body_preview(ui, &preview.body);
             });
 
             ui.add_space(10.0);

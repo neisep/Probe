@@ -6,6 +6,9 @@ mod persistence;
 mod runtime;
 mod state;
 mod ui;
+mod openapi_import;
+mod request_prep;
+mod workspace;
 
 use std::error::Error;
 
