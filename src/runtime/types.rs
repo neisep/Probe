@@ -199,6 +199,21 @@ impl ErrorInfo {
             kind,
         }
     }
+
+    pub fn format_display(&self) -> String {
+        match (&self.kind, &self.code, &self.details) {
+            (Some(kind), Some(code), Some(details)) => {
+                format!("{} [{kind}] ({code}): {details}", self.message)
+            }
+            (Some(kind), Some(code), None) => format!("{} [{kind}] ({code})", self.message),
+            (Some(kind), None, Some(details)) => format!("{} [{kind}]: {details}", self.message),
+            (Some(kind), None, None) => format!("{} [{kind}]", self.message),
+            (None, Some(code), Some(details)) => format!("{} ({code}): {details}", self.message),
+            (None, Some(code), None) => format!("{} ({code})", self.message),
+            (None, None, Some(details)) => format!("{}: {details}", self.message),
+            (None, None, None) => self.message.clone(),
+        }
+    }
 }
 
 impl ResolutionError {

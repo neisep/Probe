@@ -1,8 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 
 use crate::state::{
     Environment, RequestDraft, ResponseSummary, Result, StateError, UIState,
-    request::normalize_folder_path,
 };
 
 #[derive(Debug)]
@@ -148,16 +147,6 @@ impl AppState {
             .map(|environment| &mut environment.vars)
     }
 
-    pub fn set_active_environment_var(&mut self, key: &str, value: &str) -> Result<Option<String>> {
-        self.ensure_valid_environment_selection();
-        match self.active_environment_mut() {
-            Some(environment) => environment.set_var(key, value),
-            None => Err(StateError::InvalidInput(
-                "active environment is unavailable".to_owned(),
-            )),
-        }
-    }
-
     #[allow(dead_code)]
     pub fn remove_active_environment_var(&mut self, key: &str) -> Option<String> {
         self.active_environment_mut()
@@ -195,17 +184,6 @@ impl AppState {
             })
     }
 
-    pub fn request_name(&self, index: usize) -> Option<&str> {
-        self.requests.get(index).and_then(|request| {
-            let name = request.name.trim();
-            (!name.is_empty()).then_some(name)
-        })
-    }
-
-    pub fn request_folder_path(&self, index: usize) -> Option<&str> {
-        self.requests.get(index).and_then(RequestDraft::folder_path)
-    }
-
     #[allow(dead_code)]
     pub fn set_request_organization(
         &mut self,
@@ -229,32 +207,6 @@ impl AppState {
 
         request.set_organization(name, folder_path);
         true
-    }
-
-    pub fn request_indices_by_folder(&self) -> BTreeMap<String, Vec<usize>> {
-        let mut grouped_requests: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-
-        for (index, request) in self.requests.iter().enumerate() {
-            grouped_requests
-                .entry(normalize_folder_path(&request.folder))
-                .or_insert_with(Vec::new)
-                .push(index);
-        }
-
-        grouped_requests
-    }
-
-    pub fn folder_paths(&self) -> Vec<String> {
-        let mut folders = BTreeSet::new();
-
-        for request in &self.requests {
-            let folder = normalize_folder_path(&request.folder);
-            if !folder.is_empty() {
-                folders.insert(folder);
-            }
-        }
-
-        folders.into_iter().collect()
     }
 
     pub fn add_default_request(&mut self) -> usize {
@@ -441,50 +393,9 @@ mod tests {
 
         let index = state.add_request(draft);
 
-        assert_eq!(state.request_name(index), Some("Health check"));
-        assert_eq!(state.request_folder_path(index), Some("System"));
+        assert_eq!(state.requests[index].request_name(), Some("Health check"));
+        assert_eq!(state.requests[index].folder, "System");
         assert_eq!(state.requests[index].display_name(), "Health check");
-    }
-
-    #[test]
-    fn request_indices_by_folder_groups_ungrouped_requests() {
-        let mut state = AppState::new();
-        let first = state.add_default_request();
-        let second = state.add_default_request();
-        let third = state.add_default_request();
-
-        state.requests[first].name = "Health".to_owned();
-        state.requests[first].folder = "System".to_owned();
-        state.requests[second].name = "Users".to_owned();
-        state.requests[second].folder = "System".to_owned();
-        state.requests[third].name = "Root".to_owned();
-        state.requests[third].folder = "  ".to_owned();
-
-        let grouped = state.request_indices_by_folder();
-
-        assert_eq!(grouped.get("System"), Some(&vec![0, 1]));
-        assert_eq!(grouped.get(""), Some(&vec![2]));
-    }
-
-    #[test]
-    fn folder_paths_are_sorted_and_normalized() {
-        let mut state = AppState::new();
-        let first = state.add_default_request();
-        let second = state.add_default_request();
-        let third = state.add_default_request();
-
-        state.requests[first].folder = "  Collections / API ".to_owned();
-        state.requests[second].folder = "Collections//API/Health".to_owned();
-        state.requests[third].folder = "Collections\\Auth".to_owned();
-
-        assert_eq!(
-            state.folder_paths(),
-            vec![
-                "Collections/API".to_owned(),
-                "Collections/API/Health".to_owned(),
-                "Collections/Auth".to_owned(),
-            ]
-        );
     }
 
     #[test]
@@ -521,7 +432,11 @@ mod tests {
     fn removing_last_environment_restores_default_environment() {
         let mut state = AppState::new();
 
-        let _old_value = state.set_active_environment_var("base_url", "https://example.com");
+        state
+            .active_environment_mut()
+            .unwrap()
+            .vars
+            .insert("base_url".to_owned(), "https://example.com".to_owned());
         assert!(state.remove_environment("Default"));
 
         assert_eq!(state.environments, vec![Environment::default()]);
@@ -533,25 +448,31 @@ mod tests {
     fn active_environment_variables_follow_active_selection() {
         let mut state = AppState::new();
 
-        let initial_value = state.set_active_environment_var("token", "abc123");
-        assert!(matches!(initial_value, Ok(None)));
+        let prev = state
+            .active_environment_mut()
+            .unwrap()
+            .vars
+            .insert("token".to_owned(), "abc123".to_owned());
+        assert!(prev.is_none());
         assert_eq!(
             state
                 .active_environment()
-                .and_then(|environment| environment.get_var("token")),
+                .and_then(|e| e.vars.get("token").map(String::as_str)),
             Some("abc123")
         );
 
         assert!(matches!(state.add_environment("Staging"), Ok(1)));
         assert_eq!(state.select_environment("Staging"), Some(1));
-        assert!(matches!(
-            state.set_active_environment_var("token", "staging"),
-            Ok(None)
-        ));
+        let prev = state
+            .active_environment_mut()
+            .unwrap()
+            .vars
+            .insert("token".to_owned(), "staging".to_owned());
+        assert!(prev.is_none());
         assert_eq!(
             state
                 .active_environment()
-                .and_then(|environment| environment.get_var("token")),
+                .and_then(|e| e.vars.get("token").map(String::as_str)),
             Some("staging")
         );
 
@@ -559,7 +480,7 @@ mod tests {
         assert_eq!(
             state
                 .active_environment()
-                .and_then(|environment| environment.get_var("token")),
+                .and_then(|e| e.vars.get("token").map(String::as_str)),
             Some("abc123")
         );
     }

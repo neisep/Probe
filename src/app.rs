@@ -1,54 +1,19 @@
-use base64::Engine;
 use eframe::egui;
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::{fs, time::Duration};
 
-use crate::openapi::{ImportedOperation, MergePreview, OpenApiError, compute_merge, parse_spec};
+use crate::openapi::{OpenApiError, compute_merge, parse_spec};
+use crate::openapi_import::PendingOpenApiImport;
 use crate::openapi::source::fetch_url;
-use crate::persistence::{EnvFile, FileStorage, RequestFile};
-use crate::runtime::{
-    AsyncRequest, AsyncRequestResult, Event, ResolutionError, ResolutionErrorKind,
-    ResolutionValues, Runtime, UnresolvedBehavior, resolve_body_text, resolve_headers,
-    resolve_text_with_behavior,
-};
-use crate::state::request::{
-    ApiKeyLocation, RequestAuth, normalize_folder_path, normalize_request_name,
-};
+use crate::persistence::{FileStorage, persist_state, restore_workspace};
+use crate::request_prep::{active_resolution_values, prepare_request_draft};
+use crate::runtime::{AsyncRequest, AsyncRequestResult, Event, Runtime};
 use crate::state::{AppState, View};
 use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::{request_preview_modal, shell};
-use serde::{Deserialize, Serialize};
-
-const WORKSPACE_BUNDLE_FORMAT_VERSION: u32 = 1;
-
-#[derive(Serialize)]
-struct WorkspaceBundleRef<'a> {
-    format_version: u32,
-    requests: &'a Vec<crate::state::RequestDraft>,
-    responses: &'a Vec<crate::state::ResponseSummary>,
-    environments: &'a Vec<crate::state::Environment>,
-    active_environment: Option<usize>,
-    ui: &'a crate::state::UIState,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct WorkspaceBundle {
-    format_version: u32,
-    #[serde(default)]
-    requests: Vec<crate::state::RequestDraft>,
-    #[serde(default)]
-    responses: Vec<crate::state::ResponseSummary>,
-    #[serde(default)]
-    environments: Vec<crate::state::Environment>,
-    #[serde(default)]
-    active_environment: Option<usize>,
-    #[serde(default)]
-    ui: crate::state::UIState,
-}
+use crate::workspace::{
+    PendingWorkspaceImport, backup_workspace, preview_workspace_import,
+    workspace_bundle_from_json, workspace_bundle_to_json,
+};
 
 #[derive(Debug, Clone)]
 struct PendingRequestContext {
@@ -56,26 +21,6 @@ struct PendingRequestContext {
     method: String,
     url: String,
     headers: Vec<(String, String)>,
-}
-
-#[derive(Debug, Clone)]
-struct WorkspaceImportPreview {
-    request_count: usize,
-    response_count: usize,
-    environment_count: usize,
-    selected_request_label: Option<String>,
-}
-
-struct PendingWorkspaceImport {
-    path: PathBuf,
-    preview: WorkspaceImportPreview,
-    imported_state: AppState,
-}
-
-struct PendingOpenApiImport {
-    source: String,
-    preview: MergePreview,
-    ops: Vec<ImportedOperation>,
 }
 
 struct PendingOAuthAuth {
@@ -104,7 +49,7 @@ pub struct ProbeApp {
     pending_openapi_fetch: Option<(String, std::sync::mpsc::Receiver<Result<String, OpenApiError>>)>,
     pending_oauth_auth: Option<PendingOAuthAuth>,
     openapi_url_input: String,
-    show_openapi_url_dialog: bool,
+    openapi_url_dialog_open: bool,
     theme_installed: bool,
     response_viewer: ResponseViewerState,
     saved_requests: Vec<crate::state::RequestDraft>,
@@ -125,7 +70,7 @@ impl ProbeApp {
                 let saved_requests = state.requests.clone();
                 let saved_environments = state.environments.clone();
                 Self {
-                    status: "First slice ready".to_owned(),
+                    status: "Ready when you are!".to_owned(),
                     state,
                     runtime: Some(runtime),
                     storage,
@@ -137,7 +82,7 @@ impl ProbeApp {
                     pending_openapi_fetch: None,
                     pending_oauth_auth: None,
                     openapi_url_input: String::new(),
-                    show_openapi_url_dialog: false,
+                    openapi_url_dialog_open: false,
                     theme_installed: false,
                     response_viewer: ResponseViewerState::new(),
                     saved_requests,
@@ -160,7 +105,7 @@ impl ProbeApp {
                 pending_openapi_fetch: None,
                 pending_oauth_auth: None,
                 openapi_url_input: String::new(),
-                show_openapi_url_dialog: false,
+                openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
                 pending_close: false,
@@ -178,7 +123,7 @@ impl ProbeApp {
                 pending_openapi_fetch: None,
                 pending_oauth_auth: None,
                 openapi_url_input: String::new(),
-                show_openapi_url_dialog: false,
+                openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
                 saved_requests: Vec::new(),
@@ -198,7 +143,7 @@ impl ProbeApp {
                 pending_openapi_fetch: None,
                 pending_oauth_auth: None,
                 openapi_url_input: String::new(),
-                show_openapi_url_dialog: false,
+                openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
                 saved_requests: Vec::new(),
@@ -322,61 +267,18 @@ impl ProbeApp {
     }
 
     fn show_import_confirmation(&mut self, ctx: &egui::Context) {
-        if self.pending_workspace_import.is_none() {
+        let Some(pending) = self.pending_workspace_import.as_ref() else {
             return;
-        }
-
-        let mut confirm_import = false;
-        let mut cancel_import = false;
-        let preview = self
-            .pending_workspace_import
-            .as_ref()
-            .map(|pending_import| pending_import.preview.clone())
-            .expect("preview exists when pending import exists");
-        let import_path = self
-            .pending_workspace_import
-            .as_ref()
-            .map(|pending_import| pending_import.path.clone())
-            .expect("path exists when pending import exists");
-
-        egui::Window::new("Confirm workspace import")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!(
-                    "Replace the current workspace with {}?",
-                    import_path.display()
-                ));
-                ui.add_space(6.0);
-                ui.label(format!("Requests: {}", preview.request_count));
-                ui.label(format!("Responses: {}", preview.response_count));
-                ui.label(format!("Environments: {}", preview.environment_count));
-                if let Some(label) = preview.selected_request_label.as_deref() {
-                    ui.label(format!("Selected request: {label}"));
-                }
-                ui.add_space(6.0);
-                ui.small(
-                    "Probe will create an automatic backup of the current workspace before applying the import.",
-                );
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Import and replace").clicked() {
-                        confirm_import = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel_import = true;
-                    }
-                });
-            });
-
-        if cancel_import {
-            self.pending_workspace_import = None;
-            self.status = "Import cancelled".to_owned();
-        }
-
-        if confirm_import {
-            self.confirm_workspace_import();
+        };
+        match crate::ui::dialogs::workspace_import::show(ctx, pending) {
+            crate::ui::dialogs::workspace_import::WorkspaceImportDialogAction::None => {}
+            crate::ui::dialogs::workspace_import::WorkspaceImportDialogAction::Cancel => {
+                self.pending_workspace_import = None;
+                self.status = "Import cancelled".to_owned();
+            }
+            crate::ui::dialogs::workspace_import::WorkspaceImportDialogAction::Confirm => {
+                self.confirm_workspace_import();
+            }
         }
     }
 
@@ -404,7 +306,7 @@ impl ProbeApp {
         if url.is_empty() {
             return;
         }
-        self.show_openapi_url_dialog = false;
+        self.openapi_url_dialog_open = false;
         self.status = format!("Fetching {url}…");
         self.pending_openapi_fetch = Some((url.clone(), fetch_url(&url)));
     }
@@ -449,85 +351,30 @@ impl ProbeApp {
         let Some(pending) = self.pending_openapi_import.as_ref() else {
             return;
         };
-
-        let mut confirm = false;
-        let mut cancel = false;
-
-        let (source, new_count, updated_count, unchanged_count) = (
-            pending.source.clone(),
-            pending.preview.new_count,
-            pending.preview.updated_count,
-            pending.preview.unchanged_count,
-        );
-
-        egui::Window::new("Confirm OpenAPI import")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(format!("Source: {source}"));
-                ui.add_space(6.0);
-                ui.label(format!("New requests:       {new_count}"));
-                ui.label(format!("Updated requests:   {updated_count}"));
-                ui.label(format!("Unchanged requests: {unchanged_count}"));
-                ui.add_space(4.0);
-                ui.small("Auth, headers, and body you have set on existing requests will be preserved.");
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Import").clicked() {
-                        confirm = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-
-        if cancel {
-            self.pending_openapi_import = None;
-            self.status = "OpenAPI import cancelled".to_owned();
-        }
-        if confirm {
-            self.confirm_openapi_import();
+        match crate::ui::dialogs::openapi_import::show(ctx, pending) {
+            crate::ui::dialogs::openapi_import::OpenApiImportDialogAction::None => {}
+            crate::ui::dialogs::openapi_import::OpenApiImportDialogAction::Cancel => {
+                self.pending_openapi_import = None;
+                self.status = "OpenAPI import cancelled".to_owned();
+            }
+            crate::ui::dialogs::openapi_import::OpenApiImportDialogAction::Confirm => {
+                self.confirm_openapi_import();
+            }
         }
     }
 
     fn show_openapi_url_dialog(&mut self, ctx: &egui::Context) {
-        if !self.show_openapi_url_dialog {
+        if !self.openapi_url_dialog_open {
             return;
         }
-
-        let mut fetch = false;
-        let mut close = false;
-
-        egui::Window::new("Import OpenAPI from URL")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label("Spec URL:");
-                let response = ui.text_edit_singleline(&mut self.openapi_url_input);
-                if response.lost_focus()
-                    && ui.input(|i| i.key_pressed(egui::Key::Enter))
-                {
-                    fetch = true;
-                }
-                ui.add_space(6.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Fetch").clicked() {
-                        fetch = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        close = true;
-                    }
-                });
-            });
-
-        if close {
-            self.show_openapi_url_dialog = false;
-        }
-        if fetch {
-            self.import_openapi_from_url();
+        match crate::ui::dialogs::openapi_url::show(ctx, &mut self.openapi_url_input) {
+            crate::ui::dialogs::openapi_url::OpenApiUrlDialogAction::None => {}
+            crate::ui::dialogs::openapi_url::OpenApiUrlDialogAction::Close => {
+                self.openapi_url_dialog_open = false;
+            }
+            crate::ui::dialogs::openapi_url::OpenApiUrlDialogAction::Fetch => {
+                self.import_openapi_from_url();
+            }
         }
     }
 
@@ -635,7 +482,7 @@ impl ProbeApp {
             }
             Err(error) => {
                 let error_info = error.to_error_info();
-                self.status = format_error(&error_info);
+                self.status = error_info.format_display();
             }
         }
     }
@@ -703,134 +550,13 @@ impl ProbeApp {
         let Some(storage) = &self.storage else {
             return;
         };
-
-        let mut used_paths: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-        for (index, request) in self.state.requests.iter().enumerate() {
-            let relative_path = reserve_request_relative_path(request, index, &mut used_paths);
-            let file = RequestFile {
-                relative_path,
-                request: request.clone(),
-            };
-            if let Err(error) = storage.save_request(&file) {
-                self.status = format!("Save failed: {error}");
-                return;
+        match persist_state(&self.state, storage) {
+            Ok(()) => {
+                self.saved_requests = self.state.requests.clone();
+                self.saved_environments = self.state.environments.clone();
             }
+            Err(error) => self.status = format!("Save failed: {error}"),
         }
-        if let Err(error) = storage.delete_stale_requests(&used_paths) {
-            self.status = format!("Save failed: {error}");
-            return;
-        }
-
-        let env_file = build_env_file(&self.state);
-        if let Err(error) = storage.save_env_file(&env_file) {
-            self.status = format!("Save failed: {error}");
-            return;
-        }
-
-        let mut response_ids = Vec::new();
-        for (index, response) in self.state.responses.iter().enumerate() {
-            let response_id = format!("response-{index}");
-            let stored_response = crate::persistence::models::ResponseSummary {
-                id: response_id.clone(),
-                request_id: response.request_id.clone(),
-                status_code: response.status,
-                summary: response.error.clone(),
-                duration_ms: response.timing_ms.map(|timing_ms| timing_ms as u64),
-                created_at: None,
-            };
-
-            if let Err(error) = storage.save_response_summary(&stored_response) {
-                self.status = format!("Save failed: {error}");
-                return;
-            }
-
-            let response_preview = crate::persistence::models::ResponsePreview {
-                id: response_id.clone(),
-                response_id: response_id.clone(),
-                summary: response
-                    .error
-                    .clone()
-                    .or_else(|| response.status.map(|status| format!("HTTP {status}"))),
-                request_method: response.request_method.clone(),
-                request_url: response.request_url.clone(),
-                content_preview: response.preview_text.clone(),
-                content_body: response.body_text.clone(),
-                content_type: response.content_type.clone(),
-                header_count: response.header_count,
-                size_bytes: response.size_bytes,
-                tags: vec![],
-                created_at: None,
-            };
-
-            if let Err(error) = storage.save_response_preview(&response_preview) {
-                self.status = format!("Save failed: {error}");
-                return;
-            }
-
-            let response_preview_detail = crate::persistence::models::ResponsePreviewDetail {
-                request_headers: response
-                    .request_headers
-                    .iter()
-                    .cloned()
-                    .map(crate::persistence::models::HeaderEntry::from)
-                    .collect(),
-                response_headers: response
-                    .response_headers
-                    .iter()
-                    .cloned()
-                    .map(crate::persistence::models::HeaderEntry::from)
-                    .collect(),
-            };
-
-            if let Err(error) =
-                storage.save_response_preview_detail(&response_id, &response_preview_detail)
-            {
-                self.status = format!("Save failed: {error}");
-                return;
-            }
-
-            response_ids.push(response_id);
-        }
-        if let Err(error) = storage.delete_stale_response_ids(&response_ids) {
-            self.status = format!("Save failed: {error}");
-            return;
-        }
-
-        let selected_request_id = self
-            .state
-            .selected_request_index()
-            .map(AppState::request_id_for_index);
-        let selected_response_id = self
-            .state
-            .ui
-            .selected_response
-            .map(|index| format!("response-{index}"));
-        let active_environment_name = self
-            .state
-            .active_environment()
-            .map(|environment| environment.name.clone());
-
-        let session_state = crate::persistence::models::SessionState {
-            selected_request: selected_request_id,
-            selected_response: selected_response_id,
-            active_environment: active_environment_name,
-            active_view: Some(self.state.ui.view.label().to_owned()),
-            open_panels: vec![
-                "sidebar".to_owned(),
-                "inspector".to_owned(),
-                "status_bar".to_owned(),
-                "bottom_bar".to_owned(),
-            ],
-            updated_at: None,
-        };
-
-        if let Err(error) = storage.save_session_state(&session_state) {
-            self.status = format!("Save failed: {error}");
-            return;
-        }
-
-        self.saved_requests = self.state.requests.clone();
-        self.saved_environments = self.state.environments.clone();
     }
 
     fn has_unsaved_changes(&self) -> bool {
@@ -844,52 +570,24 @@ impl ProbeApp {
         if !self.pending_close {
             return;
         }
-
-        let mut save_and_close = false;
-        let mut close_without_saving = false;
-        let mut cancel = false;
-
         let has_pending_import =
             self.pending_openapi_import.is_some() || self.pending_workspace_import.is_some();
-        let message = if has_pending_import {
-            "You have unsaved changes or a pending import in progress. Would you like to save before closing?"
-        } else {
-            "You have unsaved changes. Would you like to save before closing?"
-        };
-
-        egui::Window::new("Unsaved changes")
-            .collapsible(false)
-            .resizable(false)
-            .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
-            .show(ctx, |ui| {
-                ui.label(message);
-                ui.add_space(8.0);
-                ui.horizontal(|ui| {
-                    if ui.button("Save and close").clicked() {
-                        save_and_close = true;
-                    }
-                    if ui.button("Close without saving").clicked() {
-                        close_without_saving = true;
-                    }
-                    if ui.button("Cancel").clicked() {
-                        cancel = true;
-                    }
-                });
-            });
-
-        if cancel {
-            self.pending_close = false;
-        }
-        if close_without_saving {
-            self.saved_requests = self.state.requests.clone();
-            self.saved_environments = self.state.environments.clone();
-            self.pending_openapi_import = None;
-            self.pending_workspace_import = None;
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        }
-        if save_and_close {
-            self.save_snapshot();
-            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        match crate::ui::dialogs::unsaved_changes::show(ctx, has_pending_import) {
+            crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::None => {}
+            crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::Cancel => {
+                self.pending_close = false;
+            }
+            crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::CloseWithoutSaving => {
+                self.saved_requests = self.state.requests.clone();
+                self.saved_environments = self.state.environments.clone();
+                self.pending_openapi_import = None;
+                self.pending_workspace_import = None;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+            crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::SaveAndClose => {
+                self.save_snapshot();
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
         }
     }
 
@@ -1028,7 +726,7 @@ impl eframe::App for ProbeApp {
                                     &mut summary,
                                     pending_context.as_ref(),
                                 );
-                                summary.error = Some(format_error(&err));
+                                summary.error = Some(err.format_display());
                                 summary.preview_text = err.details.clone();
                                 summary.body_text = err.details.clone();
                                 self.status = format!("Request {id} failed");
@@ -1087,7 +785,7 @@ impl eframe::App for ProbeApp {
                             self.import_workspace();
                         }
                         let openapi_busy = self.pending_openapi_import.is_some()
-                            || self.show_openapi_url_dialog;
+                            || self.openapi_url_dialog_open;
                         if ui
                             .add_enabled(
                                 !openapi_busy,
@@ -1106,7 +804,7 @@ impl eframe::App for ProbeApp {
                             .on_hover_text("Import from OpenAPI / Swagger URL")
                             .clicked()
                         {
-                            self.show_openapi_url_dialog = true;
+                            self.openapi_url_dialog_open = true;
                         }
                         if ui.small_button("Clear").clicked() {
                             self.state.responses.clear();
@@ -1163,603 +861,6 @@ impl eframe::App for ProbeApp {
     }
 }
 
-fn restore_workspace(state: &mut AppState, storage: &FileStorage) {
-    restore_environments_from_file(state, storage);
-    restore_requests_from_files(state, storage);
-    restore_responses_from_sidecars(state, storage);
-    apply_session_state(state, storage);
-    state.ensure_valid_selection();
-}
-
-fn restore_requests_from_files(state: &mut AppState, storage: &FileStorage) {
-    let Ok(files) = storage.list_requests() else {
-        return;
-    };
-    if files.is_empty() {
-        return;
-    }
-
-    let restored: Vec<crate::state::RequestDraft> =
-        files.into_iter().map(|file| file.request).collect();
-
-    state.requests = restored;
-    state.ui.selected_request = None;
-}
-
-fn restore_environments_from_file(state: &mut AppState, storage: &FileStorage) {
-    let env_file = match storage.load_env_file() {
-        Ok(envs) if !envs.is_empty() => envs,
-        _ => {
-            state.ensure_valid_environment_selection();
-            return;
-        }
-    };
-    let private = storage.load_private_env_file().ok().flatten();
-
-    let mut restored = Vec::with_capacity(env_file.len());
-    for (name, vars) in env_file {
-        let mut merged = vars;
-        if let Some(private) = private.as_ref() {
-            if let Some(private_vars) = private.get(&name) {
-                for (k, v) in private_vars {
-                    merged.insert(k.clone(), v.clone());
-                }
-            }
-        }
-        restored.push(crate::state::Environment {
-            name,
-            vars: merged,
-        });
-    }
-
-    if restored.is_empty() {
-        state.ensure_valid_environment_selection();
-        return;
-    }
-
-    state.environments = restored;
-    state.active_environment = None;
-    state.ensure_valid_environment_selection();
-}
-
-fn restore_responses_from_sidecars(state: &mut AppState, storage: &FileStorage) {
-    let Ok(ids) = storage.list_response_ids() else {
-        return;
-    };
-    if ids.is_empty() {
-        return;
-    }
-
-    state.responses.clear();
-    for response_id in ids {
-        let Ok(stored_response) = storage.load_response_summary(&response_id) else {
-            continue;
-        };
-
-        let preview = storage.load_response_preview(&response_id).ok();
-        let detail = storage.load_response_preview_detail(&response_id).ok();
-
-        let mut restored = crate::state::ResponseSummary {
-            request_id: stored_response.request_id.clone(),
-            request_method: preview
-                .as_ref()
-                .and_then(|preview| preview.request_method.clone()),
-            request_url: preview
-                .as_ref()
-                .and_then(|preview| preview.request_url.clone()),
-            request_headers: detail
-                .as_ref()
-                .map(|detail| {
-                    detail
-                        .request_headers
-                        .iter()
-                        .map(|header| (header.name.clone(), header.value.clone()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            response_headers: detail
-                .as_ref()
-                .map(|detail| {
-                    detail
-                        .response_headers
-                        .iter()
-                        .map(|header| (header.name.clone(), header.value.clone()))
-                        .collect()
-                })
-                .unwrap_or_default(),
-            status: stored_response.status_code,
-            timing_ms: stored_response
-                .duration_ms
-                .map(|duration_ms| duration_ms as u128),
-            size_bytes: preview.as_ref().and_then(|preview| preview.size_bytes),
-            content_type: preview.as_ref().and_then(|preview| preview.content_type.clone()),
-            header_count: preview.as_ref().and_then(|preview| preview.header_count),
-            preview_text: preview
-                .as_ref()
-                .and_then(|preview| preview.content_preview.clone()),
-            body_text: preview.as_ref().and_then(|preview| preview.content_body.clone()),
-            error: stored_response.summary.clone(),
-        };
-
-        if let Some(request_id) = restored.request_id.as_deref()
-            && let Some(request_index) = state.find_request_index_by_id(request_id)
-            && let Some(request) = state.requests.get(request_index)
-        {
-            if restored.request_method.is_none() {
-                restored.request_method = Some(request.method.clone());
-            }
-            if restored.request_url.is_none() {
-                restored.request_url = Some(request.url.clone());
-            }
-        }
-
-        state.responses.push(restored);
-    }
-}
-
-fn apply_session_state(state: &mut AppState, storage: &FileStorage) {
-    let Ok(session) = storage.load_session_state() else {
-        return;
-    };
-
-    if let Some(active_view) = session.active_view.as_deref().and_then(View::from_label) {
-        state.ui.set_view(active_view);
-    }
-
-    if let Some(selected_request_id) = session.selected_request.as_deref() {
-        if let Some(index) = state.find_request_index_by_id(selected_request_id) {
-            state.ui.select_request(index);
-        }
-    }
-
-    if let Some(selected_response_id) = session.selected_response.as_deref() {
-        if let Some(stripped) = selected_response_id.strip_prefix("response-") {
-            if let Ok(index) = stripped.parse::<usize>() {
-                if index < state.responses.len() {
-                    state.ui.select_response(index);
-                    select_request_for_response(state, index);
-                }
-            }
-        }
-    }
-
-    if let Some(active_environment_name) = session.active_environment.as_deref() {
-        state.select_environment(active_environment_name);
-    }
-}
-
-fn build_env_file(state: &AppState) -> EnvFile {
-    let mut env_file = EnvFile::new();
-    for environment in &state.environments {
-        let name = environment.name.trim();
-        if name.is_empty() {
-            continue;
-        }
-        let mut vars: BTreeMap<String, String> = BTreeMap::new();
-        for (key, value) in &environment.vars {
-            vars.insert(key.clone(), value.clone());
-        }
-        env_file.insert(name.to_owned(), vars);
-    }
-    env_file
-}
-
-fn reserve_request_relative_path(
-    request: &crate::state::RequestDraft,
-    fallback_index: usize,
-    used: &mut std::collections::BTreeSet<String>,
-) -> String {
-    let folder = normalize_folder_path(&request.folder);
-    let raw_name = normalize_request_name(&request.name)
-        .unwrap_or_else(|| format!("untitled-{fallback_index}"));
-    let slug = slugify_path_segment(&raw_name);
-    let slug = if slug.is_empty() {
-        format!("untitled-{fallback_index}")
-    } else {
-        slug
-    };
-    let base = if folder.is_empty() {
-        slug.clone()
-    } else {
-        format!("{folder}/{slug}")
-    };
-
-    let mut candidate = base.clone();
-    let mut suffix = 2;
-    while used.contains(&candidate) {
-        candidate = format!("{base}-{suffix}");
-        suffix += 1;
-    }
-    used.insert(candidate.clone());
-    candidate
-}
-
-fn slugify_path_segment(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    let mut last_was_dash = false;
-    for ch in value.chars() {
-        if ch.is_ascii_alphanumeric() || ch == '_' || ch == '.' {
-            out.push(ch);
-            last_was_dash = false;
-        } else if !last_was_dash {
-            out.push('-');
-            last_was_dash = true;
-        }
-    }
-    out.trim_matches('-').to_owned()
-}
-
-fn active_resolution_values(state: &AppState) -> ResolutionValues {
-    state.active_variables().cloned().unwrap_or_default()
-}
-
-
-fn preview_workspace_import(state: &AppState) -> WorkspaceImportPreview {
-    WorkspaceImportPreview {
-        request_count: state.requests.len(),
-        response_count: state.responses.len(),
-        environment_count: state.environments.len(),
-        selected_request_label: state
-            .selected_request()
-            .map(|request| request.display_name()),
-    }
-}
-
-fn backup_workspace(state: &AppState) -> Result<PathBuf, String> {
-    let json = workspace_bundle_to_json(state)?;
-    let backup_dir = PathBuf::from(crate::oauth::DATA_DIR).join("backups");
-    fs::create_dir_all(&backup_dir).map_err(|error| {
-        format!(
-            "could not create backup directory {}: {error}",
-            backup_dir.display()
-        )
-    })?;
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| format!("could not compute backup timestamp: {error}"))?
-        .as_millis();
-    let backup_path = backup_dir.join(format!("pre-import-{timestamp}.probe.json"));
-    fs::write(&backup_path, json)
-        .map_err(|error| format!("could not write backup {}: {error}", backup_path.display()))?;
-    Ok(backup_path)
-}
-
-fn workspace_bundle_to_json(state: &AppState) -> Result<String, String> {
-    let bundle = WorkspaceBundleRef {
-        format_version: WORKSPACE_BUNDLE_FORMAT_VERSION,
-        requests: &state.requests,
-        responses: &state.responses,
-        environments: &state.environments,
-        active_environment: state.active_environment,
-        ui: &state.ui,
-    };
-    serde_json::to_string_pretty(&bundle).map_err(|error| error.to_string())
-}
-
-fn workspace_bundle_from_json(json: &str) -> Result<AppState, String> {
-    let bundle: WorkspaceBundle = serde_json::from_str(json)
-        .map_err(|error| format!("invalid workspace bundle JSON: {error}"))?;
-    state_from_workspace_bundle(bundle)
-}
-
-
-fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, String> {
-    if bundle.format_version != WORKSPACE_BUNDLE_FORMAT_VERSION {
-        return Err(format!(
-            "unsupported workspace format version {} (expected {})",
-            bundle.format_version, WORKSPACE_BUNDLE_FORMAT_VERSION
-        ));
-    }
-
-    let mut state = AppState {
-        ui: bundle.ui,
-        requests: bundle.requests,
-        responses: bundle.responses,
-        environments: bundle.environments,
-        active_environment: bundle.active_environment,
-    };
-
-    normalize_imported_state(&mut state)?;
-    hydrate_response_request_metadata(&mut state);
-    state.ensure_valid_selection();
-    Ok(state)
-}
-
-fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
-    for (index, request) in state.requests.iter_mut().enumerate() {
-        let request_label = describe_imported_request(index, request);
-        let method = request.method.trim().to_uppercase();
-        if method.is_empty() {
-            return Err(format!("{request_label} has an empty method"));
-        }
-        let url = request.url.trim().to_owned();
-        if url.is_empty() {
-            return Err(format!("{request_label} has an empty URL"));
-        }
-
-        let name = request.name.clone();
-        let folder = request.folder.clone();
-        request.method = method;
-        request.set_request_name(&name);
-        request.set_folder_path(&folder);
-        request.set_url(&url);
-    }
-
-    let mut environment_names = std::collections::BTreeSet::new();
-    for (index, environment) in state.environments.iter_mut().enumerate() {
-        let name = environment.name.trim().to_owned();
-        if name.is_empty() {
-            return Err(format!(
-                "imported environment {} has an empty name",
-                index + 1
-            ));
-        }
-        if !environment_names.insert(name.clone()) {
-            return Err(format!("duplicate imported environment '{name}'"));
-        }
-        environment.name = name;
-    }
-
-    Ok(())
-}
-
-fn describe_imported_request(index: usize, request: &crate::state::RequestDraft) -> String {
-    if let Some(name) = normalize_request_name(&request.name) {
-        return format!("Imported request {} ('{}')", index + 1, name);
-    }
-
-    let method = request.method.trim();
-    let url = request.url.trim();
-    if !method.is_empty() || !url.is_empty() {
-        return format!(
-            "Imported request {} ('{}')",
-            index + 1,
-            format!("{method} {url}").trim()
-        );
-    }
-
-    format!("Imported request {}", index + 1)
-}
-
-fn hydrate_response_request_metadata(state: &mut AppState) {
-    let request_lookup: std::collections::BTreeMap<String, (String, String)> = state
-        .requests
-        .iter()
-        .enumerate()
-        .map(|(index, request)| {
-            (
-                AppState::request_id_for_index(index),
-                (request.method.clone(), request.url.clone()),
-            )
-        })
-        .collect();
-
-    for response in &mut state.responses {
-        let Some(request_id) = response.request_id.clone() else {
-            continue;
-        };
-
-        let Some((method, url)) = request_lookup.get(&request_id) else {
-            response.request_id = None;
-            continue;
-        };
-
-        if response.request_method.is_none() {
-            response.request_method = Some(method.clone());
-        }
-        if response.request_url.is_none() {
-            response.request_url = Some(url.clone());
-        }
-    }
-}
-
-fn prepare_request_draft(
-    request: &crate::state::RequestDraft,
-    resolution_values: &ResolutionValues,
-) -> Result<AsyncRequest, ResolutionError> {
-    let resolved_url = resolve_text_with_behavior(
-        "url",
-        &request.url,
-        resolution_values,
-        UnresolvedBehavior::Error,
-    )?;
-    let mut resolved_headers = resolve_headers(
-        &request.headers,
-        resolution_values,
-        UnresolvedBehavior::Error,
-    )?;
-    let resolved_body = resolve_body_text(
-        request.body.as_ref().map(|body| body.as_bytes()),
-        resolution_values,
-        UnresolvedBehavior::Error,
-    )?;
-    let mut resolved_query_params = Vec::with_capacity(request.query_params.len());
-
-    for (index, (name, value)) in request.query_params.iter().enumerate() {
-        let resolved_name = resolve_text_with_behavior(
-            &format!("query[{index}].name"),
-            name,
-            resolution_values,
-            UnresolvedBehavior::Error,
-        )?;
-        if resolved_name.trim().is_empty() {
-            continue;
-        }
-
-        let resolved_value = resolve_text_with_behavior(
-            &format!("query[{index}].value"),
-            value,
-            resolution_values,
-            UnresolvedBehavior::Error,
-        )?;
-        resolved_query_params.push((resolved_name, resolved_value));
-    }
-    let resolved_auth = resolve_request_auth(&request.auth, resolution_values)?;
-    apply_auth_headers(&mut resolved_headers, resolved_auth.headers)?;
-    resolved_query_params.extend(resolved_auth.query_params);
-
-    Ok(AsyncRequest {
-        url: build_request_url(&resolved_url, &resolved_query_params)?,
-        method: request.method.clone(),
-        headers: resolved_headers,
-        body: resolved_body,
-    })
-}
-
-#[derive(Default)]
-struct ResolvedAuth {
-    headers: Vec<(String, String)>,
-    query_params: Vec<(String, String)>,
-}
-
-fn resolve_request_auth(
-    auth: &RequestAuth,
-    resolution_values: &ResolutionValues,
-) -> Result<ResolvedAuth, ResolutionError> {
-    match auth {
-        RequestAuth::None => Ok(ResolvedAuth::default()),
-        RequestAuth::Bearer { token } => {
-            let token = resolve_text_with_behavior(
-                "auth.bearer.token",
-                token,
-                resolution_values,
-                UnresolvedBehavior::Error,
-            )?;
-            if token.trim().is_empty() {
-                return Err(invalid_request_error(
-                    "auth",
-                    "bearer token cannot be empty",
-                ));
-            }
-
-            Ok(ResolvedAuth {
-                headers: vec![("Authorization".to_owned(), format!("Bearer {token}"))],
-                query_params: Vec::new(),
-            })
-        }
-        RequestAuth::Basic { username, password } => {
-            let username = resolve_text_with_behavior(
-                "auth.basic.username",
-                username,
-                resolution_values,
-                UnresolvedBehavior::Error,
-            )?;
-            let password = resolve_text_with_behavior(
-                "auth.basic.password",
-                password,
-                resolution_values,
-                UnresolvedBehavior::Error,
-            )?;
-            if username.is_empty() && password.is_empty() {
-                return Err(invalid_request_error(
-                    "auth",
-                    "basic auth requires a username or password",
-                ));
-            }
-
-            let encoded = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
-            Ok(ResolvedAuth {
-                headers: vec![("Authorization".to_owned(), format!("Basic {encoded}"))],
-                query_params: Vec::new(),
-            })
-        }
-        RequestAuth::ApiKey {
-            location,
-            name,
-            value,
-        } => {
-            let name = resolve_text_with_behavior(
-                "auth.api_key.name",
-                name,
-                resolution_values,
-                UnresolvedBehavior::Error,
-            )?;
-            let value = resolve_text_with_behavior(
-                "auth.api_key.value",
-                value,
-                resolution_values,
-                UnresolvedBehavior::Error,
-            )?;
-            if name.trim().is_empty() {
-                return Err(invalid_request_error(
-                    "auth",
-                    "api key name cannot be empty",
-                ));
-            }
-            if value.trim().is_empty() {
-                return Err(invalid_request_error(
-                    "auth",
-                    "api key value cannot be empty",
-                ));
-            }
-
-            match location {
-                ApiKeyLocation::Header => Ok(ResolvedAuth {
-                    headers: vec![(name, value)],
-                    query_params: Vec::new(),
-                }),
-                ApiKeyLocation::Query => Ok(ResolvedAuth {
-                    headers: Vec::new(),
-                    query_params: vec![(name, value)],
-                }),
-            }
-        }
-    }
-}
-
-fn apply_auth_headers(
-    existing_headers: &mut Vec<(String, String)>,
-    auth_headers: Vec<(String, String)>,
-) -> Result<(), ResolutionError> {
-    for (auth_name, _) in &auth_headers {
-        if existing_headers
-            .iter()
-            .any(|(name, _)| name.eq_ignore_ascii_case(auth_name))
-        {
-            return Err(invalid_request_error(
-                "auth",
-                &format!("auth header '{auth_name}' conflicts with an existing header"),
-            ));
-        }
-    }
-
-    existing_headers.extend(auth_headers);
-    Ok(())
-}
-
-fn invalid_request_error(target: &str, details: &str) -> ResolutionError {
-    ResolutionError {
-        kind: ResolutionErrorKind::InvalidPlaceholder,
-        target: target.to_owned(),
-        placeholder: None,
-        details: Some(details.to_owned()),
-    }
-}
-
-fn build_request_url(
-    base_url: &str,
-    query_params: &[(String, String)],
-) -> Result<String, ResolutionError> {
-    if query_params.is_empty() {
-        return Ok(base_url.to_owned());
-    }
-
-    let mut url = reqwest::Url::parse(base_url).map_err(|error| ResolutionError {
-        kind: ResolutionErrorKind::InvalidPlaceholder,
-        target: "url".to_owned(),
-        placeholder: None,
-        details: Some(format!("invalid url: {error}")),
-    })?;
-    {
-        let mut serializer = url.query_pairs_mut();
-        for (name, value) in query_params {
-            serializer.append_pair(name, value);
-        }
-    }
-
-    Ok(url.to_string())
-}
-
 fn apply_pending_request_context(
     summary: &mut crate::state::ResponseSummary,
     pending_context: Option<&PendingRequestContext>,
@@ -1774,31 +875,6 @@ fn apply_pending_request_context(
     summary.request_headers = pending_context.headers.clone();
 }
 
-fn select_request_for_response(state: &mut AppState, response_index: usize) {
-    if let Some(request_id) = state
-        .responses
-        .get(response_index)
-        .and_then(|response| response.request_id.as_deref())
-        && let Some(request_index) = state.find_request_index_by_id(request_id)
-    {
-        state.ui.select_request(request_index);
-    };
-}
-
-fn format_error(error: &crate::runtime::ErrorInfo) -> String {
-    match (&error.kind, &error.code, &error.details) {
-        (Some(kind), Some(code), Some(details)) => {
-            format!("{} [{kind}] ({code}): {details}", error.message)
-        }
-        (Some(kind), Some(code), None) => format!("{} [{kind}] ({code})", error.message),
-        (Some(kind), None, Some(details)) => format!("{} [{kind}]: {details}", error.message),
-        (Some(kind), None, None) => format!("{} [{kind}]", error.message),
-        (None, Some(code), Some(details)) => format!("{} ({code}): {details}", error.message),
-        (None, Some(code), None) => format!("{} ({code})", error.message),
-        (None, None, Some(details)) => format!("{}: {details}", error.message),
-        (None, None, None) => error.message.clone(),
-    }
-}
 
 fn create_storage() -> Option<FileStorage> {
     match FileStorage::new("./data") {
@@ -1810,214 +886,3 @@ fn create_storage() -> Option<FileStorage> {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{
-        build_request_url, prepare_request_draft, workspace_bundle_from_json,
-        workspace_bundle_to_json,
-    };
-    use crate::state::request::{ApiKeyLocation, RequestAuth};
-    use crate::state::{Environment, RequestDraft, View};
-    use std::collections::BTreeMap;
-
-    #[test]
-    fn build_request_url_appends_encoded_query_params() {
-        let request_url = build_request_url(
-            "https://example.com/items#details",
-            &[
-                ("page".to_owned(), "1".to_owned()),
-                ("search".to_owned(), "hello world".to_owned()),
-            ],
-        )
-        .expect("query params should build a valid url");
-        let url = reqwest::Url::parse(&request_url).expect("built url should parse");
-        let query_pairs: Vec<(String, String)> = url
-            .query_pairs()
-            .map(|(name, value)| (name.into_owned(), value.into_owned()))
-            .collect();
-
-        assert_eq!(url.fragment(), Some("details"));
-        assert_eq!(
-            query_pairs,
-            vec![
-                ("page".to_owned(), "1".to_owned()),
-                ("search".to_owned(), "hello world".to_owned()),
-            ]
-        );
-    }
-
-    #[test]
-    fn prepare_request_draft_resolves_query_placeholders() {
-        let mut request = RequestDraft::default_request();
-        request.set_url("https://example.com/items");
-        request.query_params = vec![("search".to_owned(), "{{term}}".to_owned())];
-
-        let mut values = BTreeMap::new();
-        values.insert("term".to_owned(), "hello world".to_owned());
-
-        let prepared = prepare_request_draft(&request, &values)
-            .expect("request draft should resolve placeholders into query params");
-        let url = reqwest::Url::parse(&prepared.url).expect("prepared url should parse");
-        let query_pairs: Vec<(String, String)> = url
-            .query_pairs()
-            .map(|(name, value)| (name.into_owned(), value.into_owned()))
-            .collect();
-
-        assert_eq!(
-            query_pairs,
-            vec![("search".to_owned(), "hello world".to_owned())]
-        );
-    }
-
-    #[test]
-    fn prepare_request_draft_injects_bearer_auth_header() {
-        let mut request = RequestDraft::default_request();
-        request.auth = RequestAuth::Bearer {
-            token: "{{TOKEN}}".to_owned(),
-        };
-        let mut values = BTreeMap::new();
-        values.insert("TOKEN".to_owned(), "secret".to_owned());
-
-        let prepared =
-            prepare_request_draft(&request, &values).expect("bearer auth should resolve");
-
-        assert!(
-            prepared
-                .headers
-                .iter()
-                .any(|(name, value)| name == "Authorization" && value == "Bearer secret")
-        );
-    }
-
-    #[test]
-    fn prepare_request_draft_injects_basic_auth_header() {
-        let mut request = RequestDraft::default_request();
-        request.auth = RequestAuth::Basic {
-            username: "aladdin".to_owned(),
-            password: "open sesame".to_owned(),
-        };
-
-        let prepared =
-            prepare_request_draft(&request, &BTreeMap::new()).expect("basic auth should encode");
-
-        assert!(prepared.headers.iter().any(|(name, value)| {
-            name == "Authorization" && value == "Basic YWxhZGRpbjpvcGVuIHNlc2FtZQ=="
-        }));
-    }
-
-    #[test]
-    fn prepare_request_draft_injects_query_api_key() {
-        let mut request = RequestDraft::default_request();
-        request.auth = RequestAuth::ApiKey {
-            location: ApiKeyLocation::Query,
-            name: "api_key".to_owned(),
-            value: "{{KEY}}".to_owned(),
-        };
-        let mut values = BTreeMap::new();
-        values.insert("KEY".to_owned(), "secret".to_owned());
-
-        let prepared =
-            prepare_request_draft(&request, &values).expect("query api key should resolve");
-        let url = reqwest::Url::parse(&prepared.url).expect("prepared url should parse");
-        let query_pairs: Vec<(String, String)> = url
-            .query_pairs()
-            .map(|(name, value)| (name.into_owned(), value.into_owned()))
-            .collect();
-
-        assert_eq!(
-            query_pairs,
-            vec![("api_key".to_owned(), "secret".to_owned())]
-        );
-    }
-
-    #[test]
-    fn prepare_request_draft_rejects_auth_header_conflicts() {
-        let mut request = RequestDraft::default_request();
-        request.headers = vec![("Authorization".to_owned(), "Bearer manual".to_owned())];
-        request.auth = RequestAuth::Bearer {
-            token: "generated".to_owned(),
-        };
-
-        let error = prepare_request_draft(&request, &BTreeMap::new())
-            .expect_err("conflicting authorization header should fail");
-
-        assert_eq!(error.target, "auth");
-        assert!(
-            error
-                .details
-                .as_deref()
-                .unwrap_or_default()
-                .contains("conflicts with an existing header")
-        );
-    }
-
-    #[test]
-    fn workspace_bundle_round_trips_state() {
-        let mut state = crate::state::AppState::new();
-        let mut request = RequestDraft::default_request();
-        request.set_request_name("List users");
-        request.set_folder_path("Collections/API");
-        request.query_params = vec![("page".to_owned(), "1".to_owned())];
-        state.requests = vec![request];
-        state.responses = vec![crate::state::ResponseSummary {
-            request_id: Some("request-0".to_owned()),
-            status: Some(200),
-            ..crate::state::ResponseSummary::default()
-        }];
-        state.environments = vec![Environment::default()];
-        state.active_environment = Some(0);
-        state.ui.select_request(0);
-        state.ui.select_response(0);
-        state.ui.set_view(View::History);
-
-        let json = workspace_bundle_to_json(&state).expect("workspace should serialize");
-        let restored_state =
-            workspace_bundle_from_json(&json).expect("workspace should deserialize");
-
-        assert_eq!(restored_state.requests.len(), 1);
-        assert_eq!(restored_state.responses.len(), 1);
-        assert_eq!(restored_state.ui.selected_request, Some(0));
-        assert_eq!(restored_state.ui.selected_response, Some(0));
-        assert_eq!(restored_state.ui.view, View::History);
-        assert_eq!(
-            restored_state.requests[0].folder_path(),
-            Some("Collections/API")
-        );
-    }
-
-    #[test]
-    fn workspace_bundle_rejects_unknown_format_version() {
-        let json = r#"{"format_version":99,"requests":[],"responses":[],"environments":[],"active_environment":null,"ui":{"selected_request":null,"selected_response":null,"view":"Editor"}}"#;
-
-        let error = workspace_bundle_from_json(json)
-            .expect_err("unsupported workspace bundle version should fail");
-
-        assert!(error.contains("unsupported workspace format version"));
-    }
-
-    #[test]
-    fn workspace_bundle_reports_request_context_for_invalid_requests() {
-        let json = r#"{
-            "format_version":1,
-            "requests":[{"name":"Broken request","folder":"","method":"","url":"https://example.com","query_params":[],"auth":"None","headers":[],"body":null}],
-            "responses":[],
-            "environments":[],
-            "active_environment":null,
-            "ui":{"selected_request":null,"selected_response":null,"view":"Editor"}
-        }"#;
-
-        let error =
-            workspace_bundle_from_json(json).expect_err("invalid request should be rejected");
-
-        assert!(error.contains("Broken request"));
-        assert!(error.contains("empty method"));
-    }
-
-    #[test]
-    fn workspace_bundle_reports_invalid_json_context() {
-        let error =
-            workspace_bundle_from_json("{").expect_err("invalid workspace json should fail");
-
-        assert!(error.contains("invalid workspace bundle JSON"));
-    }
-}

@@ -14,8 +14,6 @@ pub trait TokenStore {
     fn get(&self, env_id: &str, flow_id: &str) -> Result<Option<Token>, OAuthError>;
     fn put(&self, env_id: &str, flow_id: &str, token: &Token) -> Result<(), OAuthError>;
     fn delete(&self, env_id: &str, flow_id: &str) -> Result<(), OAuthError>;
-    fn delete_env(&self, env_id: &str) -> Result<(), OAuthError>;
-    fn list(&self) -> Result<Vec<(String, String)>, OAuthError>;
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -94,8 +92,11 @@ impl TokenStore for FileTokenStore {
         }
         self.save_env(env_id, &file)
     }
+}
 
-    fn delete_env(&self, env_id: &str) -> Result<(), OAuthError> {
+#[cfg(test)]
+impl FileTokenStore {
+    pub fn delete_env(&self, env_id: &str) -> Result<(), OAuthError> {
         let path = self.env_path(env_id)?;
         if path.exists() {
             fs::remove_file(&path)?;
@@ -103,7 +104,7 @@ impl TokenStore for FileTokenStore {
         Ok(())
     }
 
-    fn list(&self) -> Result<Vec<(String, String)>, OAuthError> {
+    pub fn list(&self) -> Result<Vec<(String, String)>, OAuthError> {
         let dir = self.tokens_dir();
         if !dir.exists() {
             return Ok(Vec::new());
@@ -196,18 +197,6 @@ impl TokenStore for KeyringTokenStore {
         Self::save_env(env_id, &file)
     }
 
-    fn delete_env(&self, env_id: &str) -> Result<(), OAuthError> {
-        validate_key(env_id)?;
-        let entry = Self::entry(env_id)?;
-        match entry.delete_credential() {
-            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
-            Err(e) => Err(OAuthError::Config(format!("keyring delete_env: {e}"))),
-        }
-    }
-
-    fn list(&self) -> Result<Vec<(String, String)>, OAuthError> {
-        Ok(Vec::new())
-    }
 }
 
 fn validate_key(key: &str) -> Result<(), OAuthError> {

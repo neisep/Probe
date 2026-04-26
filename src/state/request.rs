@@ -174,11 +174,6 @@ impl RequestDraft {
         (!name.is_empty()).then_some(name)
     }
 
-    pub fn folder_path(&self) -> Option<&str> {
-        let folder = self.folder.trim();
-        (!folder.is_empty()).then_some(folder)
-    }
-
     pub fn set_request_name(&mut self, name: &str) {
         self.name = normalize_request_name(name).unwrap_or_default();
     }
@@ -322,7 +317,7 @@ mod tests {
         let mut draft = RequestDraft::default_request();
         draft.set_folder_path("   ");
 
-        assert_eq!(draft.folder_path(), None);
+        assert!(draft.folder.is_empty());
     }
 
     #[test]
@@ -331,7 +326,6 @@ mod tests {
         draft.set_folder_path("  Collections / API// v1\\ Health  ");
 
         assert_eq!(draft.folder, "Collections/API/v1/Health");
-        assert_eq!(draft.folder_path(), Some("Collections/API/v1/Health"));
     }
 
     #[test]
