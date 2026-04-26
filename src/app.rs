@@ -7,7 +7,7 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
-use crate::openapi::{MergePreview, OpenApiError, compute_merge, parse_spec};
+use crate::openapi::{ImportedOperation, MergePreview, OpenApiError, compute_merge, parse_spec};
 use crate::openapi::source::fetch_url;
 use crate::persistence::{EnvFile, FileStorage, RequestFile};
 use crate::runtime::{
@@ -75,7 +75,7 @@ struct PendingWorkspaceImport {
 struct PendingOpenApiImport {
     source: String,
     preview: MergePreview,
-    merged: Vec<crate::state::RequestDraft>,
+    ops: Vec<ImportedOperation>,
 }
 
 struct PendingOAuthAuth {
@@ -418,7 +418,7 @@ impl ProbeApp {
             }
         };
 
-        let (merged, preview) = compute_merge(&self.state.requests, &ops);
+        let (_, preview) = compute_merge(&self.state.requests, &ops);
         self.status = format!(
             "OpenAPI preview: {} new, {} updated, {} unchanged — confirm to apply",
             preview.new_count, preview.updated_count, preview.unchanged_count
@@ -426,7 +426,7 @@ impl ProbeApp {
         self.pending_openapi_import = Some(PendingOpenApiImport {
             source,
             preview,
-            merged,
+            ops,
         });
     }
 
@@ -434,7 +434,8 @@ impl ProbeApp {
         let Some(pending) = self.pending_openapi_import.take() else {
             return;
         };
-        self.state.requests = pending.merged;
+        let (merged, _) = compute_merge(&self.state.requests, &pending.ops);
+        self.state.requests = merged;
         self.state.ensure_valid_selection();
         self.save_snapshot();
         self.status = format!(
@@ -835,6 +836,8 @@ impl ProbeApp {
     fn has_unsaved_changes(&self) -> bool {
         self.state.requests != self.saved_requests
             || self.state.environments != self.saved_environments
+            || self.pending_openapi_import.is_some()
+            || self.pending_workspace_import.is_some()
     }
 
     fn show_unsaved_changes_dialog(&mut self, ctx: &egui::Context) {
@@ -846,12 +849,20 @@ impl ProbeApp {
         let mut close_without_saving = false;
         let mut cancel = false;
 
+        let has_pending_import =
+            self.pending_openapi_import.is_some() || self.pending_workspace_import.is_some();
+        let message = if has_pending_import {
+            "You have unsaved changes or a pending import in progress. Would you like to save before closing?"
+        } else {
+            "You have unsaved changes. Would you like to save before closing?"
+        };
+
         egui::Window::new("Unsaved changes")
             .collapsible(false)
             .resizable(false)
             .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
             .show(ctx, |ui| {
-                ui.label("You have unsaved changes. Would you like to save before closing?");
+                ui.label(message);
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
                     if ui.button("Save and close").clicked() {
@@ -872,6 +883,8 @@ impl ProbeApp {
         if close_without_saving {
             self.saved_requests = self.state.requests.clone();
             self.saved_environments = self.state.environments.clone();
+            self.pending_openapi_import = None;
+            self.pending_workspace_import = None;
             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
         }
         if save_and_close {

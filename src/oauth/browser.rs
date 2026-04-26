@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
@@ -7,7 +7,8 @@ use url::form_urlencoded;
 
 use super::OAuthError;
 
-const LOOPBACK_BIND_ADDR: &str = "127.0.0.1:0";
+const LOOPBACK_BIND_ADDR: SocketAddr =
+    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 const LOOPBACK_READ_BUF_SIZE: usize = 4096;
 
 pub struct LoopbackListener {
@@ -17,8 +18,7 @@ pub struct LoopbackListener {
 
 impl LoopbackListener {
     pub async fn bind() -> Result<Self, OAuthError> {
-        let addr: SocketAddr = LOOPBACK_BIND_ADDR.parse().expect("valid socket addr");
-        let listener = TcpListener::bind(addr)
+        let listener = TcpListener::bind(LOOPBACK_BIND_ADDR)
             .await
             .map_err(|e| OAuthError::Browser(format!("bind failed: {e}")))?;
         let port = listener
@@ -55,10 +55,11 @@ impl LoopbackListener {
                 break;
             }
             if total == buf.len() {
-                if buf.len() >= MAX_REQUEST_SIZE {
+                let new_len = (buf.len() * 2).min(MAX_REQUEST_SIZE);
+                if new_len == buf.len() {
                     return Err(OAuthError::Browser("redirect request too large".into()));
                 }
-                buf.resize((buf.len() * 2).min(MAX_REQUEST_SIZE), 0);
+                buf.resize(new_len, 0);
             }
         }
 

@@ -1,10 +1,9 @@
-use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
-use oauth2::{AuthUrl, ClientId, ClientSecret, Scope, TokenUrl};
+use oauth2::{Scope, TokenUrl};
 
 use crate::oauth::{FlowKind, OAuthError, Token};
 
-use super::{build_cached_token, collect_extra_params};
+use super::{build_basic_client_with_token_only, build_cached_token, collect_extra_params};
 
 #[derive(Debug, Clone)]
 pub struct ClientCredentialsConfig {
@@ -20,15 +19,11 @@ pub struct ClientCredentialsConfig {
 pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> {
     let token_url = TokenUrl::new(config.token_url.clone())
         .map_err(|e| OAuthError::Config(format!("token_url: {e}")))?;
-    let auth_url = AuthUrl::new("http://localhost/".to_owned())
-        .map_err(|e| OAuthError::Config(format!("auth_url placeholder: {e}")))?;
-
-    let client = BasicClient::new(
-        ClientId::new(config.client_id.clone()),
-        Some(ClientSecret::new(config.client_secret.clone())),
-        auth_url,
-        Some(token_url),
-    );
+    let client = build_basic_client_with_token_only(
+        &config.client_id,
+        Some(&config.client_secret),
+        token_url,
+    )?;
 
     let mut request = client.exchange_client_credentials();
     for scope in &config.scopes {

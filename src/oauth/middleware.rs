@@ -14,9 +14,19 @@ struct CachedAuth {
 }
 
 static AUTH_CACHE: OnceLock<Mutex<HashMap<String, CachedAuth>>> = OnceLock::new();
+static REFRESH_RUNTIME: OnceLock<tokio::runtime::Runtime> = OnceLock::new();
 
 fn auth_cache() -> &'static Mutex<HashMap<String, CachedAuth>> {
     AUTH_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn refresh_runtime() -> &'static tokio::runtime::Runtime {
+    REFRESH_RUNTIME.get_or_init(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("failed to build oauth refresh runtime")
+    })
 }
 
 fn cache_auth(key: &str, header: AttachmentHeader, expires_at: i64) {
@@ -166,11 +176,7 @@ fn block_on_refresh(
     flow: FlowKind,
     fallback_scopes: &[String],
 ) -> Result<Token, OAuthError> {
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|e| OAuthError::Http(format!("refresh runtime: {e}")))?;
-    runtime.block_on(async { refresh::run(&config, flow, fallback_scopes).await })
+    refresh_runtime().block_on(async { refresh::run(&config, flow, fallback_scopes).await })
 }
 
 #[cfg(test)]

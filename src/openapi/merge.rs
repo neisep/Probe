@@ -15,7 +15,9 @@ pub struct MergePreview {
 ///
 /// Spec-managed: name, folder, url, query_params, import_key.
 /// User-owned: auth, headers, body, attach_oauth.
-/// Hand-crafted requests (no import_key) are always appended unchanged.
+/// All existing requests (spec-managed and hand-crafted) keep their user-assigned
+/// positions. Spec-managed requests absent from the new spec are silently dropped.
+/// Truly new operations are appended in spec order.
 pub fn compute_merge(
     existing: &[RequestDraft],
     incoming: &[ImportedOperation],
@@ -73,16 +75,14 @@ fn merge_query_params(
     existing: &[(String, String)],
     incoming: &[(String, String)],
 ) -> Vec<(String, String)> {
+    let existing_map: HashMap<&str, &str> =
+        existing.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
     let spec_keys: HashSet<&str> = incoming.iter().map(|(k, _)| k.as_str()).collect();
     let mut result: Vec<(String, String)> = incoming
         .iter()
         .map(|(k, _)| {
-            let user_value = existing
-                .iter()
-                .find(|(ek, _)| ek == k)
-                .map(|(_, v)| v.clone())
-                .unwrap_or_default();
-            (k.clone(), user_value)
+            let user_value = existing_map.get(k.as_str()).copied().unwrap_or_default();
+            (k.clone(), user_value.to_owned())
         })
         .collect();
     for (k, v) in existing {
@@ -254,6 +254,39 @@ mod tests {
         assert_eq!(params.iter().find(|(k, _)| k == "status").map(|(_, v)| v.as_str()), Some(""));
         // user-added param "x-debug": preserved
         assert_eq!(params.iter().find(|(k, _)| k == "x-debug").map(|(_, v)| v.as_str()), Some("true"));
+    }
+
+    #[test]
+    fn preserves_user_order_on_reimport() {
+        // existing: [spec-A, hand-crafted, spec-B]
+        // incoming spec lists B before A — user order must win
+        let handcrafted = RequestDraft {
+            name: "My custom request".to_owned(),
+            folder: String::new(),
+            method: "GET".to_owned(),
+            url: "https://custom.example.com".to_owned(),
+            query_params: Vec::new(),
+            auth: RequestAuth::None,
+            headers: Vec::new(),
+            body: None,
+            attach_oauth: true,
+            import_key: None,
+        };
+        let existing = vec![
+            make_req("GET:/a", "opA"),
+            handcrafted,
+            make_req("GET:/b", "opB"),
+        ];
+        // spec reverses A and B
+        let ops = vec![
+            make_op("GET:/b", "opB", "b", "https://x.com/b"),
+            make_op("GET:/a", "opA", "a", "https://x.com/a"),
+        ];
+        let (result, _) = compute_merge(&existing, &ops);
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].import_key.as_deref(), Some("GET:/a"));
+        assert_eq!(result[1].import_key, None, "hand-crafted must stay in position 1");
+        assert_eq!(result[2].import_key.as_deref(), Some("GET:/b"));
     }
 
     #[test]
