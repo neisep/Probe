@@ -115,7 +115,7 @@ fn default_header_prefix() -> String {
     "Bearer".to_owned()
 }
 
-fn normalize_optional(value: &str) -> Option<String> {
+pub(crate) fn normalize_optional(value: &str) -> Option<String> {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         None

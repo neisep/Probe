@@ -1,10 +1,10 @@
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
-use oauth2::{AuthUrl, ClientId, ClientSecret, DeviceAuthorizationUrl, Scope, TokenUrl};
+use oauth2::{DeviceAuthorizationUrl, Scope, TokenUrl};
 
-use crate::oauth::{FlowKind, Token};
+use crate::oauth::{FlowKind, OAuthError, Token};
 
-use super::{build_cached_token, collect_extra_params};
+use super::{build_basic_client_with_token_only, build_cached_token, collect_extra_params};
 
 #[derive(Debug, Clone)]
 pub struct DeviceCodeConfig {
@@ -36,7 +36,7 @@ where
     let client = match build_client(config) {
         Ok(client) => client,
         Err(error) => {
-            on_event(DeviceCodeEvent::Failed(error));
+            on_event(DeviceCodeEvent::Failed(error.to_string()));
             return;
         }
     };
@@ -93,24 +93,14 @@ where
     on_event(DeviceCodeEvent::Completed(token));
 }
 
-fn build_client(config: &DeviceCodeConfig) -> Result<BasicClient, String> {
-    let token_url =
-        TokenUrl::new(config.token_url.clone()).map_err(|e| format!("token_url: {e}"))?;
+fn build_client(config: &DeviceCodeConfig) -> Result<BasicClient, OAuthError> {
+    let token_url = TokenUrl::new(config.token_url.clone())
+        .map_err(|e| OAuthError::Config(format!("token_url: {e}")))?;
     let device_auth_url = DeviceAuthorizationUrl::new(config.device_auth_url.clone())
-        .map_err(|e| format!("device_auth_url: {e}"))?;
-    let auth_url = AuthUrl::new("http://localhost/".to_owned())
-        .map_err(|e| format!("auth_url placeholder: {e}"))?;
+        .map_err(|e| OAuthError::Config(format!("device_auth_url: {e}")))?;
 
-    Ok(BasicClient::new(
-        ClientId::new(config.client_id.clone()),
-        config
-            .client_secret
-            .as_ref()
-            .map(|s| ClientSecret::new(s.clone())),
-        auth_url,
-        Some(token_url),
-    )
-    .set_device_authorization_url(device_auth_url))
+    build_basic_client_with_token_only(&config.client_id, config.client_secret.as_deref(), token_url)
+        .map(|c| c.set_device_authorization_url(device_auth_url))
 }
 
 #[cfg(test)]

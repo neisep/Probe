@@ -3,6 +3,29 @@ pub mod client_credentials;
 pub mod device_code;
 pub mod refresh;
 
+use oauth2::basic::BasicClient;
+use oauth2::{AuthUrl, ClientId, ClientSecret, TokenUrl};
+
+use crate::oauth::OAuthError;
+
+/// Builds a `BasicClient` for flows that only need a token endpoint.
+/// The `oauth2` crate requires an `AuthUrl` even for non-interactive flows;
+/// this helper hides that wart behind a stable placeholder.
+pub(crate) fn build_basic_client_with_token_only(
+    client_id: &str,
+    client_secret: Option<&str>,
+    token_url: TokenUrl,
+) -> Result<BasicClient, OAuthError> {
+    let auth_url = AuthUrl::new("http://localhost/".to_owned())
+        .expect("static placeholder URL is always valid");
+    Ok(BasicClient::new(
+        ClientId::new(client_id.to_owned()),
+        client_secret.map(|s| ClientSecret::new(s.to_owned())),
+        auth_url,
+        Some(token_url),
+    ))
+}
+
 pub(crate) fn collect_extra_params(
     audience: Option<&str>,
     resource: Option<&str>,
@@ -17,8 +40,9 @@ pub(crate) fn collect_extra_params(
     }
     for (k, v) in extra {
         let k = k.trim();
-        if !k.is_empty() {
-            params.push((k.to_owned(), v.clone()));
+        let v = v.trim();
+        if !k.is_empty() && !params.iter().any(|(existing, _)| existing == k) {
+            params.push((k.to_owned(), v.to_owned()));
         }
     }
     params

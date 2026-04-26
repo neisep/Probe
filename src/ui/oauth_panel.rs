@@ -1,15 +1,16 @@
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use eframe::egui;
 
-use crate::oauth::config::slugify_env_id;
+use crate::oauth::browser::open_url;
+use crate::oauth::config::{normalize_optional, slugify_env_id};
 use crate::oauth::flows::auth_code::{self, AuthCodeConfig};
 use crate::oauth::flows::client_credentials::{self, ClientCredentialsConfig};
 use crate::oauth::flows::device_code::{self, DeviceCodeConfig, DeviceCodeEvent};
 use crate::oauth::middleware;
-use crate::oauth::{FlowKind, OAuthConfig, Token, TokenStore, storage, token_store};
+use crate::oauth::{FlowKind, OAuthConfig, Token, TokenStore, now_unix, storage, token_store};
 use crate::state::AppState;
 
 #[derive(Debug, Clone)]
@@ -297,10 +298,10 @@ fn render_auth_code_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
             auth_url: snapshot.auth_url.trim().to_owned(),
             token_url: snapshot.token_url.trim().to_owned(),
             client_id: snapshot.client_id.trim().to_owned(),
-            client_secret: normalized_optional(&snapshot.client_secret),
+            client_secret: normalize_optional(&snapshot.client_secret),
             scopes: snapshot.parsed_scopes(),
-            audience: normalized_optional(&snapshot.audience),
-            resource: normalized_optional(&snapshot.resource),
+            audience: normalize_optional(&snapshot.audience),
+            resource: normalize_optional(&snapshot.resource),
             extra_auth_params: snapshot
                 .extra_params
                 .into_iter()
@@ -357,8 +358,8 @@ fn render_client_credentials_section(ui: &mut egui::Ui, panel: &mut OAuthPanelSt
             client_id: snapshot.client_id.trim().to_owned(),
             client_secret: snapshot.client_secret.trim().to_owned(),
             scopes: snapshot.parsed_scopes(),
-            audience: normalized_optional(&snapshot.audience),
-            resource: normalized_optional(&snapshot.resource),
+            audience: normalize_optional(&snapshot.audience),
+            resource: normalize_optional(&snapshot.resource),
             extra_token_params: snapshot
                 .extra_params
                 .into_iter()
@@ -431,10 +432,10 @@ fn render_device_code_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
             device_auth_url: snapshot.device_auth_url.trim().to_owned(),
             token_url: snapshot.token_url.trim().to_owned(),
             client_id: snapshot.client_id.trim().to_owned(),
-            client_secret: normalized_optional(&snapshot.client_secret),
+            client_secret: normalize_optional(&snapshot.client_secret),
             scopes: snapshot.parsed_scopes(),
-            audience: normalized_optional(&snapshot.audience),
-            resource: normalized_optional(&snapshot.resource),
+            audience: normalize_optional(&snapshot.audience),
+            resource: normalize_optional(&snapshot.resource),
             extra_token_params: snapshot
                 .extra_params
                 .into_iter()
@@ -465,12 +466,16 @@ fn render_device_verification(ui: &mut egui::Ui, verification: &DeviceVerificati
             ui.horizontal(|ui| {
                 ui.small("Verification URL:");
                 if ui.link(&verification.verification_uri).clicked() {
-                    let _ = webbrowser::open(&verification.verification_uri);
+                    if let Err(e) = open_url(&verification.verification_uri) {
+                        tracing::warn!("failed to open verification URL: {e}");
+                    }
                 }
             });
             if let Some(complete) = verification.verification_uri_complete.as_deref() {
                 if ui.small_button("Open pre-filled verification URL").clicked() {
-                    let _ = webbrowser::open(complete);
+                    if let Err(e) = open_url(complete) {
+                        tracing::warn!("failed to open pre-filled verification URL: {e}");
+                    }
                 }
             }
         });
@@ -600,22 +605,6 @@ fn humanize_duration(seconds: i64) -> String {
     }
 }
 
-fn now_unix() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
-
-fn normalized_optional(value: &str) -> Option<String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_owned())
-    }
-}
-
 fn single_line(ui: &mut egui::Ui, label: &str, buffer: &mut String, hint: &str) {
     ui.horizontal(|ui| {
         ui.label(label);
@@ -627,7 +616,11 @@ fn single_line(ui: &mut egui::Ui, label: &str, buffer: &mut String, hint: &str) 
     });
 }
 
-fn spawn_auth_code_flow(config: AuthCodeConfig) -> mpsc::Receiver<FlowEvent> {
+fn spawn_flow<F, Fut>(make_future: F) -> mpsc::Receiver<FlowEvent>
+where
+    F: FnOnce(mpsc::Sender<FlowEvent>) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send,
+{
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
         let runtime = match tokio::runtime::Builder::new_current_thread()
@@ -640,72 +633,49 @@ fn spawn_auth_code_flow(config: AuthCodeConfig) -> mpsc::Receiver<FlowEvent> {
                 return;
             }
         };
-        let result = runtime.block_on(async { auth_code::run(&config).await });
-        let event = match result {
+        runtime.block_on(make_future(tx));
+    });
+    rx
+}
+
+fn spawn_auth_code_flow(config: AuthCodeConfig) -> mpsc::Receiver<FlowEvent> {
+    spawn_flow(|tx| async move {
+        let event = match auth_code::run(&config).await {
             Ok(token) => FlowEvent::Completed(token),
             Err(error) => FlowEvent::Failed(error.to_string()),
         };
         let _ = tx.send(event);
-    });
-    rx
+    })
 }
 
 fn spawn_client_credentials_flow(config: ClientCredentialsConfig) -> mpsc::Receiver<FlowEvent> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                let _ = tx.send(FlowEvent::Failed(format!("runtime: {error}")));
-                return;
-            }
-        };
-        let result = runtime.block_on(async { client_credentials::run(&config).await });
-        let event = match result {
+    spawn_flow(|tx| async move {
+        let event = match client_credentials::run(&config).await {
             Ok(token) => FlowEvent::Completed(token),
             Err(error) => FlowEvent::Failed(error.to_string()),
         };
         let _ = tx.send(event);
-    });
-    rx
+    })
 }
 
 fn spawn_device_code_flow(config: DeviceCodeConfig) -> mpsc::Receiver<FlowEvent> {
-    let (tx, rx) = mpsc::channel();
-    std::thread::spawn(move || {
-        let runtime = match tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-        {
-            Ok(runtime) => runtime,
-            Err(error) => {
-                let _ = tx.send(FlowEvent::Failed(format!("runtime: {error}")));
-                return;
-            }
-        };
-        let tx_closure = tx.clone();
-        runtime.block_on(async move {
-            device_code::run(&config, move |event| {
-                let mapped = match event {
-                    DeviceCodeEvent::PendingUser {
-                        user_code,
-                        verification_uri,
-                        verification_uri_complete,
-                    } => FlowEvent::DeviceVerification {
-                        user_code,
-                        verification_uri,
-                        verification_uri_complete,
-                    },
-                    DeviceCodeEvent::Completed(token) => FlowEvent::Completed(token),
-                    DeviceCodeEvent::Failed(error) => FlowEvent::Failed(error),
-                };
-                let _ = tx_closure.send(mapped);
-            })
-            .await;
-        });
-    });
-    rx
+    spawn_flow(|tx| async move {
+        device_code::run(&config, move |event| {
+            let mapped = match event {
+                DeviceCodeEvent::PendingUser {
+                    user_code,
+                    verification_uri,
+                    verification_uri_complete,
+                } => FlowEvent::DeviceVerification {
+                    user_code,
+                    verification_uri,
+                    verification_uri_complete,
+                },
+                DeviceCodeEvent::Completed(token) => FlowEvent::Completed(token),
+                DeviceCodeEvent::Failed(error) => FlowEvent::Failed(error),
+            };
+            let _ = tx.send(mapped);
+        })
+        .await;
+    })
 }
