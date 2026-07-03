@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::http_format::{HttpFormatError, parse_request, write_request};
 use crate::persistence::models::{
@@ -419,12 +420,51 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), PersistenceError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    let _ = f.sync_all();
-    fs::rename(&tmp, path)?;
+
+    // Per-call unique suffix so concurrent writes to the same target don't
+    // stomp each other's in-flight temp file.
+    let tmp = unique_tmp_path(path);
+
+    let write_result = (|| -> io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        // Propagate sync_all errors — silently swallowing them defeats the
+        // entire write-temp-then-rename pattern.
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+
+    if write_result.is_err() {
+        // Best-effort cleanup; we already have an error to return, so a
+        // failed cleanup is logged but doesn't override the original cause.
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result?;
+
+    // Best-effort directory fsync on Unix so the rename is durable across
+    // a crash. Filesystems that don't support dir fsync return an error we
+    // intentionally ignore — the data fsync above is the load-bearing call.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+
     Ok(())
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension(format!("tmp.{nanos}.{n}"));
+    tmp
 }
 
 fn collect_http_files(
@@ -646,6 +686,92 @@ mod tests {
 
         let loaded = storage.load_env_file().unwrap();
         assert_eq!(loaded, envs);
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn atomic_write_leaves_no_tmp_files_on_success() {
+        let base = temp_dir();
+        let target = base.join("ok.json");
+        atomic_write(&target, b"hello").expect("write should succeed");
+
+        assert_eq!(fs::read(&target).unwrap(), b"hello");
+        for entry in fs::read_dir(&base).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(
+                !name.starts_with("ok.tmp."),
+                "leftover temp file: {name}"
+            );
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_tmp_when_rename_fails() {
+        // Force a rename failure by pointing at a target whose parent is a
+        // *file*, not a directory. fs::create_dir_all() then fails before
+        // the temp write begins, so we instead exercise a path whose
+        // *directory* exists but the rename can't land — easiest portable
+        // trigger: rename into a path that's already an existing dir.
+        let base = temp_dir();
+        let blocker = base.join("collision");
+        fs::create_dir_all(&blocker).expect("create blocking dir");
+        // Now atomic_write to `base/collision` — rename of a file onto a
+        // non-empty directory is an error on every supported platform.
+        let result = atomic_write(&blocker, b"payload");
+        assert!(result.is_err(), "rename onto a dir must fail");
+
+        // The unique-suffix temp file must be cleaned up.
+        let leftover: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("collision.tmp."))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "expected no .tmp leftovers, found: {leftover:?}"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writers_do_not_stomp() {
+        // Two threads writing to the same target with unique temp suffixes
+        // must both succeed; the final file is one of the two payloads,
+        // and no .tmp file is left behind.
+        let base = temp_dir();
+        let target = base.join("contended.json");
+
+        let t1 = {
+            let target = target.clone();
+            std::thread::spawn(move || atomic_write(&target, b"writer-one"))
+        };
+        let t2 = {
+            let target = target.clone();
+            std::thread::spawn(move || atomic_write(&target, b"writer-two"))
+        };
+        t1.join().expect("t1 join").expect("t1 write");
+        t2.join().expect("t2 join").expect("t2 write");
+
+        let final_contents = fs::read(&target).expect("target exists");
+        assert!(
+            final_contents == b"writer-one" || final_contents == b"writer-two",
+            "final contents must be exactly one writer's payload: {final_contents:?}"
+        );
+
+        let leftover: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("contended.tmp."))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "expected no .tmp leftovers, found: {leftover:?}"
+        );
 
         let _ = fs::remove_dir_all(&base);
     }

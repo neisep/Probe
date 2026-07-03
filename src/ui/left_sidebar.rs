@@ -2,6 +2,7 @@
 pub mod environment_editor;
 
 use crate::state::{AppState, RequestDraft, View, request::normalize_folder_path};
+use crate::ui::intent::PanelIntent;
 use crate::ui::theme;
 use eframe::egui;
 use std::collections::BTreeMap;
@@ -165,7 +166,11 @@ fn show_folder_node(
     response.header_response.on_hover_text(full_path);
 }
 
-pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn show_sidebar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    intents: &mut Vec<PanelIntent>,
+) {
     egui::Panel::left("sidebar")
         .resizable(true)
         .default_size(260.0)
@@ -181,9 +186,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
                     .on_hover_text("Create a fresh request draft")
                     .clicked()
                 {
-                    let new_index = state.add_default_request();
-                    state.ui.select_request(new_index);
-                    state.ui.set_view(View::Editor);
+                    intents.push(PanelIntent::AddDefaultRequest);
                 }
 
                 if ui
@@ -191,10 +194,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
                     .on_hover_text("Duplicate the selected request draft")
                     .clicked()
                 {
-                    if let Some(new_index) = state.duplicate_selected_request() {
-                        state.ui.select_request(new_index);
-                        state.ui.set_view(View::Editor);
-                    }
+                    intents.push(PanelIntent::DuplicateSelectedRequest);
                 }
 
                 if ui
@@ -202,8 +202,7 @@ pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState) {
                     .on_hover_text("Delete the selected request draft")
                     .clicked()
                 {
-                    let _removed = state.remove_selected_request();
-                    state.ui.set_view(View::Editor);
+                    intents.push(PanelIntent::RemoveSelectedRequest);
                 }
             });
             ui.separator();

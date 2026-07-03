@@ -41,7 +41,7 @@ impl ApiKeyLocation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum RequestAuth {
     #[default]
     None,
@@ -57,6 +57,33 @@ pub enum RequestAuth {
         name: String,
         value: String,
     },
+}
+
+impl std::fmt::Debug for RequestAuth {
+    /// Custom Debug that redacts the secret-bearing fields. The variant
+    /// and any non-secret descriptors (username, ApiKey location/name)
+    /// are preserved so log lines remain useful for diagnosis without
+    /// leaking the actual credentials.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => f.write_str("RequestAuth::None"),
+            Self::Bearer { .. } => f
+                .debug_struct("RequestAuth::Bearer")
+                .field("token", &"<redacted>")
+                .finish(),
+            Self::Basic { username, .. } => f
+                .debug_struct("RequestAuth::Basic")
+                .field("username", username)
+                .field("password", &"<redacted>")
+                .finish(),
+            Self::ApiKey { location, name, .. } => f
+                .debug_struct("RequestAuth::ApiKey")
+                .field("location", location)
+                .field("name", name)
+                .field("value", &"<redacted>")
+                .finish(),
+        }
+    }
 }
 
 impl RequestAuth {
@@ -340,6 +367,76 @@ mod tests {
                 ("limit".to_owned(), "10".to_owned()),
                 ("offset".to_owned(), "20".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn debug_redacts_bearer_token() {
+        let auth = RequestAuth::Bearer {
+            token: "sk_live_abc123_DEADBEEF".into(),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(
+            !rendered.contains("sk_live_abc123_DEADBEEF"),
+            "bearer token must not appear in Debug output: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn debug_redacts_basic_password_but_keeps_username() {
+        let auth = RequestAuth::Basic {
+            username: "alice".into(),
+            password: "hunter2_super_secret".into(),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(!rendered.contains("hunter2_super_secret"));
+        assert!(rendered.contains("alice"), "username should remain visible");
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn debug_redacts_api_key_value_but_keeps_name_and_location() {
+        let auth = RequestAuth::ApiKey {
+            location: ApiKeyLocation::Header,
+            name: "X-Custom-Auth".into(),
+            value: "k_live_supersecret".into(),
+        };
+        let rendered = format!("{auth:?}");
+        assert!(!rendered.contains("k_live_supersecret"));
+        assert!(rendered.contains("X-Custom-Auth"));
+        assert!(rendered.contains("Header"));
+        assert!(rendered.contains("<redacted>"));
+    }
+
+    #[test]
+    fn debug_none_variant_renders_without_redacted_marker() {
+        let rendered = format!("{:?}", RequestAuth::None);
+        assert_eq!(rendered, "RequestAuth::None");
+    }
+
+    #[test]
+    fn request_draft_debug_inherits_auth_redaction() {
+        // RequestDraft still derives Debug — confirm the redaction
+        // propagates through the derived impl via the RequestAuth field.
+        let draft = RequestDraft {
+            name: "Authed".to_owned(),
+            folder: String::new(),
+            method: "GET".to_owned(),
+            url: "https://example.com/".to_owned(),
+            query_params: vec![],
+            auth: RequestAuth::Bearer {
+                token: "TOKEN_DO_NOT_LEAK".to_owned(),
+            },
+            headers: vec![],
+            body: None,
+            attach_oauth: true,
+            import_key: None,
+        };
+        let rendered = format!("{draft:?}");
+        assert!(
+            !rendered.contains("TOKEN_DO_NOT_LEAK"),
+            "RequestDraft Debug leaked the token: {rendered}"
         );
     }
 

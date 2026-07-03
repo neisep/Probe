@@ -1,5 +1,6 @@
 pub mod center_panel;
 pub mod dialogs;
+pub mod intent;
 pub mod left_sidebar;
 pub mod oauth_panel;
 pub mod request_panel;

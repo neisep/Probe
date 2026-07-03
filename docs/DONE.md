@@ -1,0 +1,86 @@
+# Probe — Completed Work (Archive)
+
+Condensed record of finished items, with `file:line` evidence. Active/backlog
+work lives in [`../todos.md`](../todos.md).
+
+> **Verification status:** the items below are implemented in the working tree
+> but **uncommitted and not yet `cargo test`-verified**. Record the commit hash
+> in the `Landed` column once each lands and the suite is green.
+
+Items 1–5 were the "Top-5 Priority Fixes" from the consolidated code review;
+items below that are follow-ups completed afterwards.
+
+| # | Item | Landed |
+|---|------|--------|
+| 1 | Per-request timeouts + response body cap | _(uncommitted)_ |
+| 2 | UI read-only invariant via `PanelIntent` | _(uncommitted)_ |
+| 3 | OAuth refresh hardening | _(uncommitted)_ |
+| 4 | Redact secrets in `Debug` + drop resolved requests | _(uncommitted)_ |
+| 5 | `atomic_write` durability + tmp cleanup | _(uncommitted)_ |
+| C4 | Token-store concurrent-writer lock | _(uncommitted · tests green)_ |
+
+---
+
+- [x] **1. Per-request timeouts + response body cap** _(C1 + C2)_
+
+  Client built once with `connect_timeout` / `timeout` / `pool_idle_timeout`;
+  response body streamed with a 100 MB cap and a `truncated` flag; timeout vs
+  connect errors classified.
+  Evidence: `src/runtime/executor.rs:20-29` (constants), `:102-105` (client),
+  `read_body_capped` `:382-402`, error classify `:404-414`;
+  `src/runtime/types.rs:133` (`pub truncated: bool`).
+
+- [x] **2. UI read-only invariant via `PanelIntent`** _(C3)_
+
+  Panels take `&AppState` + `&mut Vec<PanelIntent>` and push intents instead of
+  mutating state; `app.rs` drains and applies them through a single surface.
+  Evidence: `src/ui/intent.rs` (enum), `src/app.rs:583-598`
+  (`apply_pending_intents` / `apply_intent`), call site `:901`; migrated panels
+  `request_panel.rs:14`, `environment_editor.rs:119`, `left_sidebar.rs:172`.
+  Note: `oauth_panel.rs` not yet migrated — tracked as a Minor backlog item.
+
+- [x] **3. OAuth refresh hardening** _(C5 + C6)_
+
+  `refresh_runtime()` returns `Result` instead of `.expect()`; per-`(base_dir,
+  env_id)` single-flight dedupes concurrent refreshes; cache key canonicalized.
+  Evidence: `src/oauth/middleware.rs:39-48` (runtime `Result`), `:28-29`
+  (`INFLIGHT_REFRESH`), `:174-204` (single-flight), `:54-59` (`cache_key`);
+  `src/oauth/mod.rs:98-102` (`OAuthError::Internal`).
+
+- [x] **4. Redact secrets in `Debug` + drop resolved requests** _(M1 + M10)_
+
+  Custom `Debug` impls redact tokens/passwords/api-keys and sensitive headers;
+  resolved requests are no longer retained in `SharedState`; pending context
+  stores pre-redacted headers.
+  Evidence: `src/state/request.rs:62-87`, `src/runtime/types.rs:68-87`,
+  `src/runtime/executor.rs:184-195`, `src/app.rs:21-30` + redaction `:685`.
+
+- [x] **5. `atomic_write` durability + tmp cleanup** _(M2)_
+
+  `sync_all()` errors propagated; failed temp files cleaned up; unique tmp paths
+  prevent concurrent stomping.
+  Evidence: `src/persistence/storage.rs:419-456` (`atomic_write`), `:458-468`
+  (`unique_tmp_path`); tests `:694`, `:713`, `:742`.
+
+---
+
+## Follow-ups
+
+- [x] **C4. Token-store concurrent-writer lock** _(critical)_
+
+  `FileTokenStore::put`/`delete` did an unguarded read-modify-write of the whole
+  env file, so a refresh thread rotating one flow's `refresh_token` could race a
+  writer of another flow and silently drop the rotated token (last writer wins).
+  Added a per-env-file in-process write lock (`write_lock` + `env_lock_key`,
+  keyed by the canonicalised path) wrapping the load→mutate→save sequence;
+  applied to both `FileTokenStore` and the feature-gated `KeyringTokenStore`.
+  The refresh flow already preserved a non-rotated token via
+  `build_cached_token` (`src/oauth/flows/mod.rs:74-77`), so no change needed
+  there.
+  Evidence: `src/oauth/store.rs` — `write_lock`/`env_lock_key` helpers,
+  guarded `put`/`delete` in `impl TokenStore for FileTokenStore` and
+  `KeyringTokenStore`; regression test
+  `concurrent_puts_to_same_env_do_not_clobber_a_rotated_refresh_token`.
+  Verified: full suite 158 passed; `cargo clippy` clean for the file.
+  Note: in-process only — cross-process / multi-instance writers would still
+  need OS file locking (out of scope; Probe runs single-instance).

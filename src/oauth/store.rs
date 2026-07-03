@@ -1,7 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::Write;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +66,14 @@ impl FileTokenStore {
         }
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
+            // Tighten the tokens dir to owner-only on Unix. This is
+            // best-effort and runs on every save — that keeps the floor
+            // in place if someone later widens permissions by mistake.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = fs::set_permissions(parent, fs::Permissions::from_mode(0o700));
+            }
         }
         let text = serde_json::to_string_pretty(file)?;
         atomic_write(&path, text.as_bytes())
@@ -79,6 +89,9 @@ impl TokenStore for FileTokenStore {
 
     fn put(&self, env_id: &str, flow_id: &str, token: &Token) -> Result<(), OAuthError> {
         validate_key(flow_id)?;
+        let path = self.env_path(env_id)?;
+        let lock = write_lock(&env_lock_key(&path));
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut file = self.load_env(env_id)?;
         file.tokens.insert(flow_id.to_owned(), token.clone());
         self.save_env(env_id, &file)
@@ -86,6 +99,9 @@ impl TokenStore for FileTokenStore {
 
     fn delete(&self, env_id: &str, flow_id: &str) -> Result<(), OAuthError> {
         validate_key(flow_id)?;
+        let path = self.env_path(env_id)?;
+        let lock = write_lock(&env_lock_key(&path));
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut file = self.load_env(env_id)?;
         if file.tokens.remove(flow_id).is_none() {
             return Ok(());
@@ -182,6 +198,8 @@ impl TokenStore for KeyringTokenStore {
     fn put(&self, env_id: &str, flow_id: &str, token: &Token) -> Result<(), OAuthError> {
         validate_key(env_id)?;
         validate_key(flow_id)?;
+        let lock = write_lock(&format!("keyring:{env_id}"));
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut file = Self::load_env(env_id)?;
         file.tokens.insert(flow_id.to_owned(), token.clone());
         Self::save_env(env_id, &file)
@@ -190,6 +208,8 @@ impl TokenStore for KeyringTokenStore {
     fn delete(&self, env_id: &str, flow_id: &str) -> Result<(), OAuthError> {
         validate_key(env_id)?;
         validate_key(flow_id)?;
+        let lock = write_lock(&format!("keyring:{env_id}"));
+        let _guard = lock.lock().unwrap_or_else(PoisonError::into_inner);
         let mut file = Self::load_env(env_id)?;
         if file.tokens.remove(flow_id).is_none() {
             return Ok(());
@@ -197,6 +217,38 @@ impl TokenStore for KeyringTokenStore {
         Self::save_env(env_id, &file)
     }
 
+}
+
+/// Serialises the read-modify-write of a single token-store entry.
+///
+/// `put`/`delete` load the whole env file (it holds every flow's token),
+/// mutate one flow, and write it back. Without serialisation two concurrent
+/// writers to the same file — e.g. the OAuth refresh thread rotating one
+/// flow's `refresh_token` while the UI saves another flow — both read the old
+/// file, each applies its own change, and the last writer wins, silently
+/// dropping the other's update (including a freshly rotated refresh token).
+/// Locking is per-entry so unrelated envs never contend. The registry holds a
+/// small, bounded number of locks (one per env file ever touched this run).
+fn write_lock(key: &str) -> Arc<Mutex<()>> {
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<Mutex<()>>>>> = OnceLock::new();
+    let registry = LOCKS.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut guard = registry.lock().unwrap_or_else(PoisonError::into_inner);
+    guard.entry(key.to_owned()).or_default().clone()
+}
+
+/// Lock key for an env file. The file itself may not exist yet (first write),
+/// so we canonicalise its parent directory and rejoin the file name; this
+/// collapses "./data/..." and "data/..." to a single lock. Falls back to the
+/// raw path when the parent can't be resolved.
+fn env_lock_key(path: &Path) -> String {
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => fs::canonicalize(parent)
+            .map(|p| p.join(name))
+            .unwrap_or_else(|_| path.to_path_buf()),
+        _ => path.to_path_buf(),
+    }
+    .to_string_lossy()
+    .into_owned()
 }
 
 fn validate_key(key: &str) -> Result<(), OAuthError> {
@@ -212,13 +264,67 @@ fn validate_key(key: &str) -> Result<(), OAuthError> {
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), OAuthError> {
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp)?;
-    let result = f.write_all(data).and_then(|_| f.sync_all()).and_then(|_| fs::rename(&tmp, path));
-    if result.is_err() {
+    // Per-call unique suffix so concurrent writes to the same token file
+    // don't stomp each other's in-flight temp file.
+    let tmp = unique_tmp_path(path);
+
+    let write_result = (|| -> io::Result<()> {
+        let mut f = create_token_tmp_file(&tmp)?;
+        f.write_all(data)?;
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+
+    if write_result.is_err() {
         let _ = fs::remove_file(&tmp);
     }
-    Ok(result?)
+    write_result?;
+
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+
+    Ok(())
+}
+
+/// Create the temp file used for atomic write of a token file. On Unix
+/// the file is born with mode `0o600` (owner read/write only) via
+/// `OpenOptions::mode` — closing the window where a default-umask
+/// `File::create` produces a 0o644 file we'd later have to chmod down.
+#[cfg(unix)]
+fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(0o600)
+        .open(path)
+}
+
+#[cfg(not(unix))]
+fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
+    // On Windows / WASI the Unix permission model doesn't apply; ACLs
+    // / NTFS permissions are inherited from the parent directory. Keep
+    // the simple `File::create` behaviour and rely on the caller's
+    // directory ACL for confidentiality.
+    fs::File::create(path)
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension(format!("tmp.{nanos}.{n}"));
+    tmp
 }
 
 #[cfg(test)]
@@ -353,6 +459,98 @@ mod tests {
                 store.put("dev", bad, &token),
                 Err(OAuthError::InvalidKey(_))
             ));
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn token_file_has_owner_only_mode_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = temp_dir();
+        let store = FileTokenStore::new(&base);
+        store
+            .put("dev", "auth_code_pkce", &sample(FlowKind::AuthCodePkce))
+            .expect("put");
+
+        let path = store.env_path("dev").unwrap();
+        let metadata = fs::metadata(&path).expect("token file exists");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "token file must be readable only by its owner (got {mode:o})"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn tokens_directory_has_owner_only_mode_on_unix() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let base = temp_dir();
+        let store = FileTokenStore::new(&base);
+        store
+            .put("dev", "auth_code_pkce", &sample(FlowKind::AuthCodePkce))
+            .expect("put");
+
+        let dir = store.tokens_dir();
+        let metadata = fs::metadata(&dir).expect("tokens dir exists");
+        let mode = metadata.permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o700,
+            "tokens directory must be traversable only by its owner (got {mode:o})"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn concurrent_puts_to_same_env_do_not_clobber_a_rotated_refresh_token() {
+        // C4 regression: two writers hit the same env file at once — one
+        // rotates the auth_code flow's refresh token, the other writes a
+        // second flow. Without the per-file write lock the unguarded
+        // read-modify-write races and the last writer drops the other's
+        // update. Repeat enough rounds to surface the race reliably.
+        let base = temp_dir();
+        let store = Arc::new(FileTokenStore::new(&base));
+
+        for round in 0..50 {
+            store.delete_env("dev").unwrap();
+
+            let mut rotated = sample(FlowKind::AuthCodePkce);
+            let expected_rt = format!("rotated-{round}");
+            rotated.refresh_token = Some(expected_rt.clone());
+
+            let writer_a = Arc::clone(&store);
+            let writer_b = Arc::clone(&store);
+            let t1 = std::thread::spawn(move || writer_a.put("dev", "auth_code_pkce", &rotated));
+            let t2 = std::thread::spawn(move || {
+                writer_b.put(
+                    "dev",
+                    "client_credentials",
+                    &sample(FlowKind::ClientCredentials),
+                )
+            });
+            t1.join().unwrap().unwrap();
+            t2.join().unwrap().unwrap();
+
+            let kept = store
+                .get("dev", "auth_code_pkce")
+                .unwrap()
+                .expect("auth_code flow must survive the concurrent write");
+            assert_eq!(
+                kept.refresh_token.as_deref(),
+                Some(expected_rt.as_str()),
+                "rotated refresh token must not be clobbered (round {round})"
+            );
+            assert!(
+                store.get("dev", "client_credentials").unwrap().is_some(),
+                "client_credentials flow must survive the concurrent write (round {round})"
+            );
         }
 
         let _ = fs::remove_dir_all(&base);

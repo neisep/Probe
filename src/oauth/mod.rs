@@ -95,6 +95,11 @@ pub enum OAuthError {
     AuthDenied(String),
     Parse(String),
     Config(String),
+    /// System-level failures that aren't the user's fault and aren't an
+    /// HTTP/protocol issue — e.g. the OAuth refresh tokio runtime failed
+    /// to build, or a result was fanned out to a follower in single-flight
+    /// refresh and we only have the error's message text.
+    Internal(String),
 }
 
 impl From<std::io::Error> for OAuthError {
@@ -121,6 +126,7 @@ impl std::fmt::Display for OAuthError {
             OAuthError::AuthDenied(details) => write!(f, "authorization denied: {details}"),
             OAuthError::Parse(details) => write!(f, "parse error: {details}"),
             OAuthError::Config(details) => write!(f, "config error: {details}"),
+            OAuthError::Internal(details) => write!(f, "internal error: {details}"),
         }
     }
 }
