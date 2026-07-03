@@ -216,7 +216,6 @@ impl TokenStore for KeyringTokenStore {
         }
         Self::save_env(env_id, &file)
     }
-
 }
 
 /// Serialises the read-modify-write of a single token-store entry.

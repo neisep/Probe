@@ -1,13 +1,18 @@
+// Guard against accidentally committing `dbg!(...)`, which prints via the
+// `Debug` impl and would bypass the secret-redaction work by dumping
+// token/password-bearing structs to stderr.
+#![warn(clippy::dbg_macro)]
+
 mod app;
 mod http_format;
 mod oauth;
 mod openapi;
+mod openapi_import;
 mod persistence;
+mod request_prep;
 mod runtime;
 mod state;
 mod ui;
-mod openapi_import;
-mod request_prep;
 mod workspace;
 
 use std::error::Error;

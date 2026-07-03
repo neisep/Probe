@@ -11,9 +11,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 
 pub use config::OAuthConfig;
-pub use store::{FileTokenStore, TokenStore};
 #[cfg(feature = "keyring-storage")]
 pub use store::KeyringTokenStore;
+pub use store::{FileTokenStore, TokenStore};
 
 use crate::persistence::FileStorage;
 

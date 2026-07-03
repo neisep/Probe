@@ -44,10 +44,7 @@ fn restore_environments_from_file(state: &mut AppState, storage: &FileStorage) {
                 }
             }
         }
-        restored.push(crate::state::Environment {
-            name,
-            vars: merged,
-        });
+        restored.push(crate::state::Environment { name, vars: merged });
     }
 
     if restored.is_empty() {
@@ -110,12 +107,16 @@ fn restore_responses_from_sidecars(state: &mut AppState, storage: &FileStorage) 
                 .duration_ms
                 .map(|duration_ms| duration_ms as u128),
             size_bytes: preview.as_ref().and_then(|preview| preview.size_bytes),
-            content_type: preview.as_ref().and_then(|preview| preview.content_type.clone()),
+            content_type: preview
+                .as_ref()
+                .and_then(|preview| preview.content_type.clone()),
             header_count: preview.as_ref().and_then(|preview| preview.header_count),
             preview_text: preview
                 .as_ref()
                 .and_then(|preview| preview.content_preview.clone()),
-            body_text: preview.as_ref().and_then(|preview| preview.content_body.clone()),
+            body_text: preview
+                .as_ref()
+                .and_then(|preview| preview.content_body.clone()),
             error: stored_response.summary.clone(),
         };
 

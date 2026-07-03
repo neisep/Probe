@@ -11,6 +11,7 @@ pub const TEXT_MUTED: egui::Color32 = egui::Color32::from_rgb(0x7a, 0x82, 0xa3);
 pub const ACCENT: egui::Color32 = egui::Color32::from_rgb(0x7a, 0xa2, 0xf7);
 pub const ACCENT_STRONG: egui::Color32 = egui::Color32::from_rgb(0x9e, 0xc1, 0xff);
 pub const SELECTION: egui::Color32 = egui::Color32::from_rgb(0x33, 0x4b, 0x7a);
+pub const DANGER: egui::Color32 = egui::Color32::from_rgb(0xf7, 0x76, 0x8e);
 
 pub const GET: egui::Color32 = egui::Color32::from_rgb(0x9e, 0xce, 0x6a);
 pub const POST: egui::Color32 = egui::Color32::from_rgb(0x7a, 0xa2, 0xf7);
@@ -81,11 +82,23 @@ pub fn install(ctx: &egui::Context) {
 
     use egui::{FontFamily, FontId, TextStyle};
     style.text_styles = [
-        (TextStyle::Heading, FontId::new(16.0, FontFamily::Proportional)),
+        (
+            TextStyle::Heading,
+            FontId::new(16.0, FontFamily::Proportional),
+        ),
         (TextStyle::Body, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Button, FontId::new(14.0, FontFamily::Proportional)),
-        (TextStyle::Small, FontId::new(12.0, FontFamily::Proportional)),
-        (TextStyle::Monospace, FontId::new(13.0, FontFamily::Monospace)),
+        (
+            TextStyle::Button,
+            FontId::new(14.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Small,
+            FontId::new(12.0, FontFamily::Proportional),
+        ),
+        (
+            TextStyle::Monospace,
+            FontId::new(13.0, FontFamily::Monospace),
+        ),
     ]
     .into();
 
@@ -224,7 +237,11 @@ pub fn json_layout_job(text: &str, font_size: f32, wrap_width: f32) -> egui::tex
             }
             _ => {
                 let start = i;
-                while i < bytes.len() && !matches!(bytes[i], b'"' | b'{' | b'}' | b'[' | b']' | b':' | b',' | b'-' | b'0'..=b'9')
+                while i < bytes.len()
+                    && !matches!(
+                        bytes[i],
+                        b'"' | b'{' | b'}' | b'[' | b']' | b':' | b',' | b'-' | b'0'..=b'9'
+                    )
                     && !matches_kw(bytes, i, b"true")
                     && !matches_kw(bytes, i, b"false")
                     && !matches_kw(bytes, i, b"null")
@@ -258,10 +275,6 @@ fn append_slice(
         return;
     }
     if let Some(slice) = text.get(start..end) {
-        job.append(
-            slice,
-            0.0,
-            egui::TextFormat::simple(font_id.clone(), color),
-        );
+        job.append(slice, 0.0, egui::TextFormat::simple(font_id.clone(), color));
     }
 }

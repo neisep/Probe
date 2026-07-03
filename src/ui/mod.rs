@@ -3,6 +3,7 @@ pub mod dialogs;
 pub mod intent;
 pub mod left_sidebar;
 pub mod oauth_panel;
+pub mod panel_state;
 pub mod request_panel;
 pub mod request_preview_modal;
 pub mod response_panel;

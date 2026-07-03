@@ -4,8 +4,8 @@ use crate::runtime::{
     AsyncRequest, ResolutionError, ResolutionErrorKind, ResolutionValues, UnresolvedBehavior,
     resolve_body_text, resolve_headers, resolve_text_with_behavior,
 };
-use crate::state::request::{ApiKeyLocation, RequestAuth};
 use crate::state::AppState;
+use crate::state::request::{ApiKeyLocation, RequestAuth};
 
 pub fn active_resolution_values(state: &AppState) -> ResolutionValues {
     state.active_variables().cloned().unwrap_or_default()
@@ -115,8 +115,7 @@ fn resolve_request_auth(
                 ));
             }
 
-            let encoded =
-                base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
+            let encoded = base64::prelude::BASE64_STANDARD.encode(format!("{username}:{password}"));
             Ok(ResolvedAuth {
                 headers: vec![("Authorization".to_owned(), format!("Basic {encoded}"))],
                 query_params: Vec::new(),
@@ -222,8 +221,8 @@ pub fn build_request_url(
 #[cfg(test)]
 mod tests {
     use super::{build_request_url, prepare_request_draft};
-    use crate::state::request::{ApiKeyLocation, RequestAuth};
     use crate::state::RequestDraft;
+    use crate::state::request::{ApiKeyLocation, RequestAuth};
     use std::collections::BTreeMap;
 
     #[test]

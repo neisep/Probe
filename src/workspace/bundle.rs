@@ -2,8 +2,8 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::state::request::normalize_request_name;
 use crate::state::AppState;
+use crate::state::request::normalize_request_name;
 
 const WORKSPACE_BUNDLE_FORMAT_VERSION: u32 = 1;
 
@@ -112,6 +112,7 @@ fn state_from_workspace_bundle(bundle: WorkspaceBundle) -> Result<AppState, Stri
         responses: bundle.responses,
         environments: bundle.environments,
         active_environment: bundle.active_environment,
+        revision: 0,
     };
 
     normalize_imported_state(&mut state)?;
@@ -212,7 +213,10 @@ fn normalize_imported_state(state: &mut AppState) -> Result<(), String> {
             ));
         }
         if name.len() > MAX_NAME_LENGTH {
-            return Err(format!("imported environment {} name is too long", index + 1));
+            return Err(format!(
+                "imported environment {} name is too long",
+                index + 1
+            ));
         }
         if environment.vars.len() > MAX_VARS_PER_ENVIRONMENT {
             return Err(format!(
@@ -371,8 +375,8 @@ mod tests {
             "ui":{"selected_request":null,"selected_response":null,"view":"Editor"},
             "evil_payload":{"do":"bad things"}
         }"#;
-        let error = workspace_bundle_from_json(json)
-            .expect_err("unknown top-level field must be rejected");
+        let error =
+            workspace_bundle_from_json(json).expect_err("unknown top-level field must be rejected");
         assert!(
             error.contains("evil_payload") || error.contains("unknown"),
             "error should reference the unknown field: {error}"
@@ -383,7 +387,10 @@ mod tests {
     fn workspace_bundle_rejects_oversized_request_url() {
         // Generate a URL well past MAX_FIELD_LENGTH (8 KB) and confirm
         // we reject it with a clear message.
-        let huge_url = format!("https://example.com/{}", "x".repeat(super::MAX_FIELD_LENGTH));
+        let huge_url = format!(
+            "https://example.com/{}",
+            "x".repeat(super::MAX_FIELD_LENGTH)
+        );
         let json = format!(
             r#"{{
                 "format_version":1,
@@ -396,16 +403,14 @@ mod tests {
                 "ui":{{"selected_request":null,"selected_response":null,"view":"Editor"}}
             }}"#
         );
-        let error = workspace_bundle_from_json(&json)
-            .expect_err("oversized URL must be rejected");
+        let error = workspace_bundle_from_json(&json).expect_err("oversized URL must be rejected");
         assert!(error.contains("URL is too long"), "got: {error}");
     }
 
     #[test]
     fn workspace_bundle_rejects_excessive_request_count() {
         // Hand-build a tiny request that we then duplicate past the cap.
-        let mut payload =
-            String::from(r#"{"format_version":1,"requests":["#);
+        let mut payload = String::from(r#"{"format_version":1,"requests":["#);
         let single = r#"{"name":"r","folder":"","method":"GET","url":"https://e","query_params":[],"auth":"None","headers":[],"body":null,"attach_oauth":false}"#;
         for index in 0..super::MAX_REQUESTS + 1 {
             if index > 0 {
@@ -449,6 +454,9 @@ mod tests {
         );
         let error = workspace_bundle_from_json(&json)
             .expect_err("per-request header cap must reject the bundle");
-        assert!(error.contains("headers") && error.contains("max"), "got: {error}");
+        assert!(
+            error.contains("headers") && error.contains("max"),
+            "got: {error}"
+        );
     }
 }

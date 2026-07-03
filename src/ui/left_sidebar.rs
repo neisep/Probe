@@ -166,11 +166,7 @@ fn show_folder_node(
     response.header_response.on_hover_text(full_path);
 }
 
-pub fn show_sidebar(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    intents: &mut Vec<PanelIntent>,
-) {
+pub fn show_sidebar(ui: &mut egui::Ui, state: &mut AppState, intents: &mut Vec<PanelIntent>) {
     egui::Panel::left("sidebar")
         .resizable(true)
         .default_size(260.0)
@@ -283,7 +279,6 @@ pub fn show_sidebar(
                     }
                 });
             }
-
         });
 }
 

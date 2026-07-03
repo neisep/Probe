@@ -27,7 +27,10 @@ pub enum PanelIntent {
 
     // ---- Single-request edits ----------------------------------------------
     /// Set the HTTP method on the request at `index`.
-    SetRequestMethod { index: usize, method: String },
+    SetRequestMethod {
+        index: usize,
+        method: String,
+    },
     /// Set the URL on the request. `commit=false` is a per-keystroke raw
     /// assignment that preserves what the user is typing. `commit=true`
     /// runs the URL normalisers (`set_url` / `adopt_url_query`), splitting
@@ -51,11 +54,20 @@ pub enum PanelIntent {
         commit: bool,
     },
     /// Replace the auth configuration.
-    SetRequestAuth { index: usize, auth: RequestAuth },
+    SetRequestAuth {
+        index: usize,
+        auth: RequestAuth,
+    },
     /// Replace the body — `None` clears it.
-    SetRequestBody { index: usize, body: Option<String> },
+    SetRequestBody {
+        index: usize,
+        body: Option<String>,
+    },
     /// Toggle the OAuth-token-attach flag.
-    SetAttachOAuth { index: usize, attach: bool },
+    SetAttachOAuth {
+        index: usize,
+        attach: bool,
+    },
     /// Replace the full query-params list (used by the KV editor).
     SetRequestQueryParams {
         index: usize,
@@ -71,11 +83,17 @@ pub enum PanelIntent {
     /// Add a new environment with an auto-generated name.
     AddAutoNamedEnvironment,
     /// Remove the environment with the given name.
-    RemoveEnvironment { name: String },
+    RemoveEnvironment {
+        name: String,
+    },
     /// Make the named environment active.
-    SelectEnvironment { name: String },
+    SelectEnvironment {
+        name: String,
+    },
     /// Rename the currently active environment.
-    RenameActiveEnvironment { new_name: String },
+    RenameActiveEnvironment {
+        new_name: String,
+    },
     /// Replace the entire variable map for the named environment.
     SetEnvironmentVars {
         name: String,

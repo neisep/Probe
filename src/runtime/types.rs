@@ -81,7 +81,10 @@ impl fmt::Debug for AsyncRequest {
             .field("method", &self.method)
             .field("url", &self.url)
             .field("headers", &redacted_headers)
-            .field("body", &self.body.as_ref().map(|b| format!("<{} bytes>", b.len())))
+            .field(
+                "body",
+                &self.body.as_ref().map(|b| format!("<{} bytes>", b.len())),
+            )
             .finish()
     }
 }
@@ -486,7 +489,10 @@ mod tests {
             method: "GET".into(),
             headers: vec![
                 ("Accept".to_owned(), "application/json".to_owned()),
-                ("Authorization".to_owned(), "Bearer LIVE_TOKEN_XYZ".to_owned()),
+                (
+                    "Authorization".to_owned(),
+                    "Bearer LIVE_TOKEN_XYZ".to_owned(),
+                ),
             ],
             body: None,
         };

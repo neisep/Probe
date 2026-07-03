@@ -536,7 +536,9 @@ mod tests {
     /// Spin up a one-shot HTTP/1.1 server that returns a body of `body_len` bytes.
     /// Returns the bound `http://127.0.0.1:<port>` URL once the listener is live.
     async fn spawn_oneshot_server(body_len: usize) -> String {
-        let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind loopback");
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind loopback");
         let addr = listener.local_addr().expect("local_addr");
         let url = format!("http://{addr}/");
 

@@ -75,8 +75,10 @@ fn merge_query_params(
     existing: &[(String, String)],
     incoming: &[(String, String)],
 ) -> Vec<(String, String)> {
-    let existing_map: HashMap<&str, &str> =
-        existing.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let existing_map: HashMap<&str, &str> = existing
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
     let spec_keys: HashSet<&str> = incoming.iter().map(|(k, _)| k.as_str()).collect();
     let mut result: Vec<(String, String)> = incoming
         .iter()
@@ -179,7 +181,12 @@ mod tests {
     #[test]
     fn updated_when_url_changes() {
         let existing = vec![make_req("GET:/pet", "findPets")];
-        let ops = vec![make_op("GET:/pet", "findPets", "pet", "https://NEW.com/pet")];
+        let ops = vec![make_op(
+            "GET:/pet",
+            "findPets",
+            "pet",
+            "https://NEW.com/pet",
+        )];
         let (result, preview) = compute_merge(&existing, &ops);
         assert_eq!(preview.updated_count, 1);
         assert_eq!(result[0].url, "https://NEW.com/pet");
@@ -191,7 +198,12 @@ mod tests {
         existing[0].auth = RequestAuth::Bearer {
             token: "my-secret".to_owned(),
         };
-        let ops = vec![make_op("GET:/pet", "findPets Renamed", "pet", "https://x.com/pet")];
+        let ops = vec![make_op(
+            "GET:/pet",
+            "findPets Renamed",
+            "pet",
+            "https://x.com/pet",
+        )];
         let (result, _) = compute_merge(&existing, &ops);
         assert_eq!(result[0].name, "findPets Renamed");
         assert_eq!(
@@ -235,7 +247,7 @@ mod tests {
             method: "GET".to_owned(),
             url: "https://x.com/pets".to_owned(),
             query_params: vec![
-                ("limit".to_owned(), "20".to_owned()),   // user-filled spec param
+                ("limit".to_owned(), "20".to_owned()), // user-filled spec param
                 ("x-debug".to_owned(), "true".to_owned()), // user-added custom param
             ],
             auth: RequestAuth::None,
@@ -249,11 +261,29 @@ mod tests {
         let params = &result[0].query_params;
 
         // spec param "limit": user's value preserved
-        assert_eq!(params.iter().find(|(k, _)| k == "limit").map(|(_, v)| v.as_str()), Some("20"));
+        assert_eq!(
+            params
+                .iter()
+                .find(|(k, _)| k == "limit")
+                .map(|(_, v)| v.as_str()),
+            Some("20")
+        );
         // spec param "status": new, gets empty value
-        assert_eq!(params.iter().find(|(k, _)| k == "status").map(|(_, v)| v.as_str()), Some(""));
+        assert_eq!(
+            params
+                .iter()
+                .find(|(k, _)| k == "status")
+                .map(|(_, v)| v.as_str()),
+            Some("")
+        );
         // user-added param "x-debug": preserved
-        assert_eq!(params.iter().find(|(k, _)| k == "x-debug").map(|(_, v)| v.as_str()), Some("true"));
+        assert_eq!(
+            params
+                .iter()
+                .find(|(k, _)| k == "x-debug")
+                .map(|(_, v)| v.as_str()),
+            Some("true")
+        );
     }
 
     #[test]
@@ -285,7 +315,10 @@ mod tests {
         let (result, _) = compute_merge(&existing, &ops);
         assert_eq!(result.len(), 3);
         assert_eq!(result[0].import_key.as_deref(), Some("GET:/a"));
-        assert_eq!(result[1].import_key, None, "hand-crafted must stay in position 1");
+        assert_eq!(
+            result[1].import_key, None,
+            "hand-crafted must stay in position 1"
+        );
         assert_eq!(result[2].import_key.as_deref(), Some("GET:/b"));
     }
 

@@ -4,8 +4,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::state::AppState;
 use super::bundle::{WorkspaceImportPreview, workspace_bundle_to_json};
+use crate::state::AppState;
 
 /// Maximum byte length we'll accept for an imported workspace file.
 /// Beyond this we refuse to even read the file into memory — both as a
@@ -29,8 +29,7 @@ pub fn read_workspace_bundle_file(path: &Path) -> Result<String, String> {
             MAX_WORKSPACE_BUNDLE_BYTES
         ));
     }
-    fs::read_to_string(path)
-        .map_err(|error| format!("could not read {}: {error}", path.display()))
+    fs::read_to_string(path).map_err(|error| format!("could not read {}: {error}", path.display()))
 }
 
 pub fn preview_workspace_import(state: &AppState) -> WorkspaceImportPreview {
@@ -85,8 +84,7 @@ mod tests {
         f.set_len(MAX_WORKSPACE_BUNDLE_BYTES + 1).expect("set_len");
         drop(f);
 
-        let error = read_workspace_bundle_file(&path)
-            .expect_err("oversized file must be rejected");
+        let error = read_workspace_bundle_file(&path).expect_err("oversized file must be rejected");
         assert!(
             error.contains("max") && error.contains("bytes"),
             "error should reference the cap: {error}"

@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::state::{
-    Environment, RequestDraft, ResponseSummary, Result, StateError, UIState,
-};
+use crate::state::{Environment, RequestDraft, ResponseSummary, Result, StateError, UIState};
 
 #[derive(Debug)]
 pub struct AppState {
@@ -11,6 +9,13 @@ pub struct AppState {
     pub responses: Vec<ResponseSummary>,
     pub environments: Vec<Environment>,
     pub active_environment: Option<usize>,
+    /// Monotonic mutation counter. Bumped once per applied `PanelIntent`
+    /// (see `app::apply_intent_to_state`) so callers can cheaply detect
+    /// "did anything change?" without deep-comparing the state tree.
+    /// Not persisted — it is a transient in-memory signal. Mutated only
+    /// via `bump_revision`; `pub(crate)` solely so in-crate constructors
+    /// (e.g. workspace import) can initialise it to zero.
+    pub(crate) revision: u64,
 }
 
 impl AppState {
@@ -25,9 +30,22 @@ impl AppState {
             responses: Vec::new(),
             environments: Vec::new(),
             active_environment: None,
+            revision: 0,
         };
         state.ensure_valid_environment_selection();
         state
+    }
+
+    /// Current mutation revision. Increases by one each time an intent is
+    /// applied through the central funnel.
+    #[allow(dead_code)]
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Advance the mutation revision. Called once per applied intent.
+    pub fn bump_revision(&mut self) {
+        self.revision = self.revision.wrapping_add(1);
     }
 
     pub fn add_request(&mut self, request: RequestDraft) -> usize {

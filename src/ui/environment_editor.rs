@@ -1,8 +1,8 @@
 use crate::state::AppState;
 use crate::ui::intent::PanelIntent;
+use crate::ui::panel_state::PanelUiState;
 use eframe::egui;
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct EnvironmentVariableRow {
@@ -17,8 +17,10 @@ enum EnvTab {
     Auth,
 }
 
+/// Transient state for the environment editor panel. Held on `PanelUiState`
+/// (owned by `ProbeApp`) and passed in by reference each frame.
 #[derive(Default)]
-struct EnvironmentEditorUiState {
+pub struct EnvironmentEditorUiState {
     synced_environment: Option<usize>,
     name_buffer: String,
     variable_rows: Vec<EnvironmentVariableRow>,
@@ -53,19 +55,6 @@ impl EnvironmentEditorUiState {
                     .collect()
             })
             .unwrap_or_default();
-    }
-}
-
-static ENVIRONMENT_EDITOR_STATE: OnceLock<Mutex<EnvironmentEditorUiState>> = OnceLock::new();
-
-fn environment_editor_state() -> &'static Mutex<EnvironmentEditorUiState> {
-    ENVIRONMENT_EDITOR_STATE.get_or_init(|| Mutex::new(EnvironmentEditorUiState::default()))
-}
-
-fn with_editor_state<R>(f: impl FnOnce(&mut EnvironmentEditorUiState) -> R) -> Option<R> {
-    match environment_editor_state().lock() {
-        Ok(mut state) => Some(f(&mut state)),
-        Err(_poisoned) => None,
     }
 }
 
@@ -116,12 +105,14 @@ pub fn active_environment_label(state: &AppState) -> String {
 pub fn show_sidebar_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    panels: &mut PanelUiState,
     intents: &mut Vec<PanelIntent>,
 ) {
     state.ensure_valid_environment_selection();
     ui.heading("Environment");
 
-    let rendered = with_editor_state(|editor| {
+    {
+        let editor = &mut panels.environment_editor;
         editor.sync_from_state(state);
 
         let environment_choices: Vec<(String, String)> = state
@@ -223,21 +214,24 @@ pub fn show_sidebar_section(
                 "variables",
             ));
         }
-    });
-
-    if rendered.is_none() {
-        ui.small("Environment editor unavailable");
     }
 }
 
 pub fn show_request_section(
     ui: &mut egui::Ui,
     state: &mut AppState,
+    panels: &mut PanelUiState,
     intents: &mut Vec<PanelIntent>,
 ) {
     state.ensure_valid_environment_selection();
 
-    let rendered = with_editor_state(|editor| {
+    {
+        // Disjoint borrows of the two transient panel states so the Auth tab
+        // can mutate the OAuth panel while the editor is also borrowed.
+        let PanelUiState {
+            environment_editor: editor,
+            oauth,
+        } = panels;
         editor.sync_from_state(state);
 
         egui::CollapsingHeader::new("Environment")
@@ -266,16 +260,11 @@ pub fn show_request_section(
 
                 match editor.active_tab {
                     EnvTab::Variables => render_variables_tab(ui, editor, state, intents),
-                    EnvTab::Auth => crate::ui::oauth_panel::show(ui, state),
+                    EnvTab::Auth => {
+                        let env_name = state.active_environment_name();
+                        crate::ui::oauth_panel::show(ui, oauth, env_name);
+                    }
                 }
-            });
-    });
-
-    if rendered.is_none() {
-        egui::CollapsingHeader::new("Environment")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.small("Environment editor unavailable");
             });
     }
 }
@@ -329,9 +318,7 @@ fn render_variables_tab(
     let rows_changed = editor.variable_rows != rows_before || remove_index.is_some();
     let (variables, has_pending_key, has_duplicate_key) = collect_variable_rows(editor);
 
-    if rows_changed
-        && let Some(name) = state.active_environment_name().map(str::to_owned)
-    {
+    if rows_changed && let Some(name) = state.active_environment_name().map(str::to_owned) {
         intents.push(PanelIntent::SetEnvironmentVars {
             name,
             vars: variables.clone(),

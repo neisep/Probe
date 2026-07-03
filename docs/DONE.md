@@ -84,3 +84,53 @@ items below that are follow-ups completed afterwards.
   Verified: full suite 158 passed; `cargo clippy` clean for the file.
   Note: in-process only — cross-process / multi-instance writers would still
   need OS file locking (out of scope; Probe runs single-instance).
+
+---
+
+## Backlog follow-ups (post-review)
+
+- [x] **M5. Surface worker failures** _(medium)_
+
+  Startup `Runtime::new` errors already landed in `self.status`, but rendered
+  in the same muted grey as normal messages and were lost once `status`
+  changed. Added a **persistent** worker-health badge: when `runtime` is
+  `None`, the status bar shows a red "⚠ Runtime offline" label (with a
+  hover explaining the cause) that stays until the app is restarted.
+  Per-request submit failures already surface via `"Submit error: …"`, and no
+  other worker path exits silently.
+  Evidence: `src/ui/theme.rs` (`DANGER` const), `src/app.rs` status bar
+  (runtime-offline badge next to `self.status`).
+  Verified: full suite green.
+
+- [x] **M7. `state_revision` change counter** _(medium)_
+
+  `AppState` now carries a monotonic `revision: u64`, bumped once at the top
+  of the single mutation funnel (`apply_intent_to_state`) so every applied
+  intent counts exactly once — including no-op-looking intents, since the bump
+  precedes dispatch. Exposes `revision()`; field is `pub(crate)` only so
+  in-crate constructors can zero-init it.
+  Evidence: `src/state/app_state.rs` (`revision` field, `revision()`,
+  `bump_revision()`), `src/app.rs:apply_intent_to_state` (bump), test
+  `each_applied_intent_bumps_revision_exactly_once`.
+  Verified: 159 passed.
+
+- [x] **Migrate panels off static mutexes** _(minor)_
+
+  Both `oauth_panel` (`PANEL_STATE`) and its sibling `environment_editor`
+  (`ENVIRONMENT_EDITOR_STATE`) held transient UI state in process-global
+  `OnceLock<Mutex<…>>` singletons. Introduced `ui::panel_state::PanelUiState`,
+  owned by `ProbeApp` (mirroring `ResponseViewerState`) and threaded through
+  `shell::show` → the environment-editor sections → `oauth_panel::show`. Both
+  statics and the poison-recovery `with_editor_state` helper are gone; the
+  Auth tab mutates the OAuth panel via a disjoint borrow of the holder.
+  Evidence: `src/ui/panel_state.rs`, `src/ui/oauth_panel.rs` (`show` now takes
+  `&mut OAuthPanelState`), `src/ui/environment_editor.rs`, `src/ui/shell.rs`,
+  `src/app.rs` (`panels` field).
+  Verified: full suite green; `cargo clippy` clean.
+
+- [x] **Add `clippy::dbg_macro` lint** _(minor)_
+
+  `#![warn(clippy::dbg_macro)]` at the crate root guards against committing a
+  `dbg!(…)` that would dump secret-bearing structs to stderr, bypassing the
+  `Debug`-redaction work.
+  Evidence: `src/main.rs:1`. Verified: `cargo clippy` clean (no `dbg!` calls).

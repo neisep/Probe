@@ -77,7 +77,10 @@ pub fn parse_request(text: &str) -> Result<RequestDraft, HttpFormatError> {
         return Err(HttpFormatError::MissingRequestLine);
     }
 
-    while body_lines.first().is_some_and(|line| line.trim().is_empty()) {
+    while body_lines
+        .first()
+        .is_some_and(|line| line.trim().is_empty())
+    {
         body_lines.remove(0);
     }
     while body_lines.last().is_some_and(|line| line.trim().is_empty()) {
@@ -394,7 +397,10 @@ X-API-Key: s3cret
         let mut draft = RequestDraft::default_request();
         draft.import_key = Some("GET:/pets/{petId}".to_owned());
         let text = write_request(&draft);
-        assert!(text.contains("# @probe-import-key GET:/pets/{petId}\n"), "missing directive in: {text}");
+        assert!(
+            text.contains("# @probe-import-key GET:/pets/{petId}\n"),
+            "missing directive in: {text}"
+        );
         let parsed = parse_request(&text).expect("parse");
         assert_eq!(parsed.import_key, Some("GET:/pets/{petId}".to_owned()));
     }

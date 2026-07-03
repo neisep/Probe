@@ -24,9 +24,7 @@ pub fn show_request_editor(
                 .color(theme::TEXT_MUTED)
                 .italics(),
         );
-        if queue_preview_for_selected
-            && let Some(selected_index) = state.selected_request_index()
-        {
+        if queue_preview_for_selected && let Some(selected_index) = state.selected_request_index() {
             state.ui.queue_preview_request(selected_index);
         }
         return;
@@ -42,9 +40,7 @@ pub fn show_request_editor(
         RequestTab::Body => show_body_tab(ui, state, intents),
     }
 
-    if queue_preview_for_selected
-        && let Some(selected_index) = state.selected_request_index()
-    {
+    if queue_preview_for_selected && let Some(selected_index) = state.selected_request_index() {
         state.ui.queue_preview_request(selected_index);
     }
 }
@@ -94,7 +90,9 @@ fn show_header_row(
             if ui
                 .add(
                     egui::Button::new(
-                        egui::RichText::new("Send").strong().color(theme::TEXT_STRONG),
+                        egui::RichText::new("Send")
+                            .strong()
+                            .color(theme::TEXT_STRONG),
                     )
                     .fill(theme::ACCENT.gamma_multiply(0.55)),
                 )
@@ -227,7 +225,11 @@ fn tab_count_hint(state: &AppState, tab: RequestTab) -> Option<usize> {
             (n > 0).then_some(n)
         }
         RequestTab::Headers => {
-            let n = req.headers.iter().filter(|(k, _)| !k.trim().is_empty()).count();
+            let n = req
+                .headers
+                .iter()
+                .filter(|(k, _)| !k.trim().is_empty())
+                .count();
             (n > 0).then_some(n)
         }
         RequestTab::Body => req
@@ -248,7 +250,13 @@ fn show_params_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelI
     };
     let mut rows = req.query_params.clone();
     let original = rows.clone();
-    show_kv_editor(ui, &mut rows, "param_name", "param_value", "No query parameters");
+    show_kv_editor(
+        ui,
+        &mut rows,
+        "param_name",
+        "param_value",
+        "No query parameters",
+    );
     if rows != original {
         intents.push(PanelIntent::SetRequestQueryParams {
             index: selected_index,
@@ -476,7 +484,11 @@ fn show_oauth_hint(
                 } else if seconds < 3600 {
                     format!("(expires in {}m)", seconds / 60)
                 } else {
-                    format!("(expires in {}h {}m)", seconds / 3600, (seconds % 3600) / 60)
+                    format!(
+                        "(expires in {}h {}m)",
+                        seconds / 3600,
+                        (seconds % 3600) / 60
+                    )
                 };
                 ui.small(egui::RichText::new("●").color(egui::Color32::from_rgb(52, 168, 83)));
                 ui.small(egui::RichText::new(label).color(egui::Color32::from_rgb(52, 168, 83)));
@@ -540,9 +552,13 @@ fn show_body_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelInt
 
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!("{} bytes · {} lines", body_buf.len(), body_buf.lines().count()))
-                .color(theme::TEXT_MUTED)
-                .small(),
+            egui::RichText::new(format!(
+                "{} bytes · {} lines",
+                body_buf.len(),
+                body_buf.lines().count()
+            ))
+            .color(theme::TEXT_MUTED)
+            .small(),
         );
         if let Some(h) = hint {
             ui.label(

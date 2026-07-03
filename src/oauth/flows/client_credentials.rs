@@ -29,7 +29,11 @@ pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> 
     for scope in &config.scopes {
         request = request.add_scope(Scope::new(scope.clone()));
     }
-    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_token_params) {
+    for (k, v) in collect_extra_params(
+        config.audience.as_deref(),
+        config.resource.as_deref(),
+        &config.extra_token_params,
+    ) {
         request = request.add_extra_param(k, v);
     }
 
@@ -38,7 +42,12 @@ pub async fn run(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> 
         .await
         .map_err(|e| OAuthError::Http(format!("client credentials token exchange failed: {e}")))?;
 
-    Ok(build_cached_token(&response, FlowKind::ClientCredentials, &config.scopes, None))
+    Ok(build_cached_token(
+        &response,
+        FlowKind::ClientCredentials,
+        &config.scopes,
+        None,
+    ))
 }
 
 #[cfg(test)]

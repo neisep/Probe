@@ -3,7 +3,9 @@ use std::sync::{Mutex, OnceLock, mpsc};
 
 use crate::oauth::config::slugify_env_id;
 use crate::oauth::flows::refresh::{self, RefreshConfig};
-use crate::oauth::{now_unix, FileTokenStore, FlowKind, OAuthConfig, OAuthError, Token, TokenStore};
+use crate::oauth::{
+    FileTokenStore, FlowKind, OAuthConfig, OAuthError, Token, TokenStore, now_unix,
+};
 use crate::persistence::FileStorage;
 
 const REFRESH_BUFFER_SECONDS: i64 = 60;
@@ -120,10 +122,7 @@ pub fn resolve_authorization(env_name: &str) -> AuthResolution {
     resolve_authorization_at(env_name, crate::oauth::DATA_DIR)
 }
 
-pub(crate) fn resolve_authorization_at(
-    env_name: &str,
-    base_dir: &str,
-) -> AuthResolution {
+pub(crate) fn resolve_authorization_at(env_name: &str, base_dir: &str) -> AuthResolution {
     let env_id = slugify_env_id(env_name);
     let key = cache_key(base_dir, &env_id);
     let now = now_unix();
@@ -347,9 +346,10 @@ mod tests {
     #[test]
     fn returns_none_when_no_config() {
         let base = TempDir::new();
-        let result = resolve_authorization_at("dev", base.to_str().unwrap()).into_ready().unwrap();
+        let result = resolve_authorization_at("dev", base.to_str().unwrap())
+            .into_ready()
+            .unwrap();
         assert!(result.is_none());
-
     }
 
     #[test]
@@ -359,18 +359,20 @@ mod tests {
         storage
             .save_oauth_config("dev", &OAuthConfig::default())
             .unwrap();
-        let result = resolve_authorization_at("dev", base.to_str().unwrap()).into_ready().unwrap();
+        let result = resolve_authorization_at("dev", base.to_str().unwrap())
+            .into_ready()
+            .unwrap();
         assert!(result.is_none());
-
     }
 
     #[test]
     fn returns_none_when_no_token_stored() {
         let base = TempDir::new();
         configured_env(&base, FlowKind::ClientCredentials);
-        let result = resolve_authorization_at("dev", base.to_str().unwrap()).into_ready().unwrap();
+        let result = resolve_authorization_at("dev", base.to_str().unwrap())
+            .into_ready()
+            .unwrap();
         assert!(result.is_none());
-
     }
 
     #[test]
@@ -379,7 +381,11 @@ mod tests {
         configured_env(&base, FlowKind::ClientCredentials);
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("dev", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "dev",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
         let attachment = resolve_authorization_at("dev", base.to_str().unwrap())
@@ -388,7 +394,6 @@ mod tests {
             .expect("expected attachment");
         assert_eq!(attachment.name, "Authorization");
         assert_eq!(attachment.value, "Bearer atk");
-
     }
 
     #[test]
@@ -401,7 +406,11 @@ mod tests {
 
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("dev", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "dev",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
         let attachment = resolve_authorization_at("dev", base.to_str().unwrap())
@@ -410,7 +419,6 @@ mod tests {
             .expect("expected attachment");
         assert_eq!(attachment.name, "X-Custom-Auth");
         assert_eq!(attachment.value, "Bearer atk");
-
     }
 
     #[test]
@@ -424,7 +432,11 @@ mod tests {
 
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("dev", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "dev",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
         let attachment = resolve_authorization_at("dev", base.to_str().unwrap())
@@ -433,7 +445,6 @@ mod tests {
             .expect("expected attachment");
         assert_eq!(attachment.name, "X-API-Key");
         assert_eq!(attachment.value, "atk");
-
     }
 
     #[test]
@@ -450,12 +461,17 @@ mod tests {
 
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("dev", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "dev",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
-        let result = resolve_authorization_at("dev", base.to_str().unwrap()).into_ready().unwrap();
+        let result = resolve_authorization_at("dev", base.to_str().unwrap())
+            .into_ready()
+            .unwrap();
         assert!(result.is_none());
-
     }
 
     #[test]
@@ -471,13 +487,14 @@ mod tests {
             obtained_at: now_unix() - 3600,
             scopes: vec![],
         };
-        token_store.put("dev", "client_credentials", &token).unwrap();
+        token_store
+            .put("dev", "client_credentials", &token)
+            .unwrap();
 
         let error = resolve_authorization_at("dev", base.to_str().unwrap())
             .into_ready()
             .expect_err("expected error");
         assert!(matches!(error, OAuthError::AuthDenied(_)));
-
     }
 
     #[test]
@@ -486,7 +503,11 @@ mod tests {
         configured_env(&base, FlowKind::ClientCredentials);
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("dev", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "dev",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
         let first = resolve_authorization_at("dev", base.to_str().unwrap())
@@ -505,8 +526,13 @@ mod tests {
 
         invalidate_at("dev", base.to_str().unwrap());
 
-        let after = resolve_authorization_at("dev", base.to_str().unwrap()).into_ready().unwrap();
-        assert!(after.is_none(), "invalidate must force a re-read from the token store");
+        let after = resolve_authorization_at("dev", base.to_str().unwrap())
+            .into_ready()
+            .unwrap();
+        assert!(
+            after.is_none(),
+            "invalidate must force a re-read from the token store"
+        );
     }
 
     #[test]
@@ -545,13 +571,16 @@ mod tests {
             .expect("temp dir has a file name")
             .to_string_lossy()
             .into_owned();
-        let indirect = parent.join("..").join(
-            parent
-                .file_name()
-                .expect("parent has file name")
-                .to_string_lossy()
-                .into_owned(),
-        ).join(&basename);
+        let indirect = parent
+            .join("..")
+            .join(
+                parent
+                    .file_name()
+                    .expect("parent has file name")
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+            .join(&basename);
 
         let direct_key = cache_key(path.to_str().unwrap(), "dev");
         let indirect_key = cache_key(indirect.to_str().unwrap(), "dev");
@@ -664,7 +693,11 @@ mod tests {
 
         let token_store = FileTokenStore::new(&base);
         token_store
-            .put("My_Env", "client_credentials", &valid_token(FlowKind::ClientCredentials))
+            .put(
+                "My_Env",
+                "client_credentials",
+                &valid_token(FlowKind::ClientCredentials),
+            )
             .unwrap();
 
         let attachment = resolve_authorization_at("My Env", base.to_str().unwrap())
@@ -672,6 +705,5 @@ mod tests {
             .unwrap()
             .expect("expected attachment");
         assert_eq!(attachment.value, "Bearer atk");
-
     }
 }

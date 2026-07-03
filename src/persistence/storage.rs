@@ -253,8 +253,7 @@ impl FileStorage {
 
     /// Delete response and response-preview entries whose ID is not in `keep`.
     pub fn delete_stale_response_ids(&self, keep: &[String]) -> Result<(), PersistenceError> {
-        let keep_set: std::collections::BTreeSet<&str> =
-            keep.iter().map(String::as_str).collect();
+        let keep_set: std::collections::BTreeSet<&str> = keep.iter().map(String::as_str).collect();
         let existing = self.list_response_ids()?;
         for id in existing {
             if !keep_set.contains(id.as_str()) {
@@ -286,7 +285,8 @@ impl FileStorage {
         id: &str,
         detail: &ResponsePreviewDetail,
     ) -> Result<(), PersistenceError> {
-        let mut stored: StoredResponsePreview = self.read_internal_json(RESPONSE_PREVIEWS_DIR, id)?;
+        let mut stored: StoredResponsePreview =
+            self.read_internal_json(RESPONSE_PREVIEWS_DIR, id)?;
         stored.detail = detail.clone();
         self.write_internal_json(RESPONSE_PREVIEWS_DIR, id, &stored)
     }
@@ -700,10 +700,7 @@ mod tests {
         for entry in fs::read_dir(&base).unwrap() {
             let path = entry.unwrap().path();
             let name = path.file_name().unwrap().to_string_lossy().into_owned();
-            assert!(
-                !name.starts_with("ok.tmp."),
-                "leftover temp file: {name}"
-            );
+            assert!(!name.starts_with("ok.tmp."), "leftover temp file: {name}");
         }
 
         let _ = fs::remove_dir_all(&base);

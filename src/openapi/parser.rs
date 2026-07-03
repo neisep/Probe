@@ -92,10 +92,7 @@ fn parse_openapi3(spec: &OpenAPI) -> Result<Vec<ImportedOperation>, OpenApiError
     Ok(ops)
 }
 
-fn resolve_auth_hint3(
-    operation: &openapiv3::Operation,
-    spec: &OpenAPI,
-) -> Option<RequestAuth> {
+fn resolve_auth_hint3(operation: &openapiv3::Operation, spec: &OpenAPI) -> Option<RequestAuth> {
     let schemes = spec.components.as_ref()?.security_schemes.clone();
 
     let requirements = operation
@@ -147,10 +144,7 @@ fn security_scheme_to_auth(scheme: &SecurityScheme) -> Option<RequestAuth> {
     }
 }
 
-fn extract_body_example3(
-    operation: &openapiv3::Operation,
-    spec: &OpenAPI,
-) -> Option<String> {
+fn extract_body_example3(operation: &openapiv3::Operation, spec: &OpenAPI) -> Option<String> {
     let rb = match operation.request_body.as_ref()? {
         ReferenceOr::Item(rb) => rb,
         ReferenceOr::Reference { reference } => {
@@ -300,11 +294,13 @@ fn parse_swagger2(raw: &Value) -> Result<Vec<ImportedOperation>, OpenApiError> {
                 .iter()
                 .chain(path_level.iter())
                 .filter(|p| p.location == "query")
-                .filter_map(|p| seen.insert(p.name.clone()).then(|| (p.name.clone(), String::new())))
+                .filter_map(|p| {
+                    seen.insert(p.name.clone())
+                        .then(|| (p.name.clone(), String::new()))
+                })
                 .collect();
 
-            let auth_hint =
-                resolve_auth_hint2(operation, spec.security_definitions.as_ref());
+            let auth_hint = resolve_auth_hint2(operation, spec.security_definitions.as_ref());
 
             ops.push(ImportedOperation {
                 import_key,
@@ -458,18 +454,33 @@ mod tests {
         let ops = parse_spec(PETSTORE_3).expect("parse");
         assert_eq!(ops.len(), 4);
 
-        let get_pet = ops.iter().find(|o| o.import_key == "GET:/pet").expect("GET:/pet");
+        let get_pet = ops
+            .iter()
+            .find(|o| o.import_key == "GET:/pet")
+            .expect("GET:/pet");
         assert_eq!(get_pet.name, "findPets");
         assert_eq!(get_pet.folder, "pet");
         assert_eq!(get_pet.url, "https://petstore3.swagger.io/api/v3/pet");
-        assert_eq!(get_pet.query_params, vec![("status".to_owned(), String::new())]);
+        assert_eq!(
+            get_pet.query_params,
+            vec![("status".to_owned(), String::new())]
+        );
 
-        let post_pet = ops.iter().find(|o| o.import_key == "POST:/pet").expect("POST:/pet");
+        let post_pet = ops
+            .iter()
+            .find(|o| o.import_key == "POST:/pet")
+            .expect("POST:/pet");
         assert_eq!(post_pet.name, "addPet");
 
-        let get_by_id = ops.iter().find(|o| o.import_key == "GET:/pet/{petId}").expect("GET by id");
+        let get_by_id = ops
+            .iter()
+            .find(|o| o.import_key == "GET:/pet/{petId}")
+            .expect("GET by id");
         assert_eq!(get_by_id.name, "getPetById");
-        assert!(get_by_id.query_params.is_empty(), "path param must not appear in query_params");
+        assert!(
+            get_by_id.query_params.is_empty(),
+            "path param must not appear in query_params"
+        );
     }
 
     #[test]
@@ -477,11 +488,17 @@ mod tests {
         let ops = parse_spec(PETSTORE_2).expect("parse");
         assert_eq!(ops.len(), 2);
 
-        let post = ops.iter().find(|o| o.import_key == "POST:/pet").expect("POST:/pet");
+        let post = ops
+            .iter()
+            .find(|o| o.import_key == "POST:/pet")
+            .expect("POST:/pet");
         assert_eq!(post.url, "https://petstore.swagger.io/v2/pet");
         assert_eq!(post.folder, "pet");
 
-        let get = ops.iter().find(|o| o.import_key == "GET:/pet/findByStatus").expect("GET status");
+        let get = ops
+            .iter()
+            .find(|o| o.import_key == "GET:/pet/findByStatus")
+            .expect("GET status");
         assert_eq!(get.query_params, vec![("status".to_owned(), String::new())]);
     }
 
@@ -534,11 +551,26 @@ paths:
   }
 }"#;
         let ops = parse_spec(spec).expect("parse");
-        let get = ops.iter().find(|o| o.import_key == "GET:/search").expect("GET");
-        assert!(get.query_params.iter().any(|(k, _)| k == "q"), "op-level param missing");
-        assert!(get.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing");
-        let post = ops.iter().find(|o| o.import_key == "POST:/search").expect("POST");
-        assert!(post.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing on POST");
+        let get = ops
+            .iter()
+            .find(|o| o.import_key == "GET:/search")
+            .expect("GET");
+        assert!(
+            get.query_params.iter().any(|(k, _)| k == "q"),
+            "op-level param missing"
+        );
+        assert!(
+            get.query_params.iter().any(|(k, _)| k == "format"),
+            "path-level param missing"
+        );
+        let post = ops
+            .iter()
+            .find(|o| o.import_key == "POST:/search")
+            .expect("POST");
+        assert!(
+            post.query_params.iter().any(|(k, _)| k == "format"),
+            "path-level param missing on POST"
+        );
     }
 
     #[test]
@@ -568,18 +600,37 @@ paths:
   }
 }"#;
         let ops = parse_spec(spec).expect("parse");
-        let get = ops.iter().find(|o| o.import_key == "GET:/search").expect("GET");
-        assert!(get.query_params.iter().any(|(k, _)| k == "q"), "op-level param missing");
-        assert!(get.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing");
-        let post = ops.iter().find(|o| o.import_key == "POST:/search").expect("POST");
-        assert!(post.query_params.iter().any(|(k, _)| k == "format"), "path-level param missing on POST");
+        let get = ops
+            .iter()
+            .find(|o| o.import_key == "GET:/search")
+            .expect("GET");
+        assert!(
+            get.query_params.iter().any(|(k, _)| k == "q"),
+            "op-level param missing"
+        );
+        assert!(
+            get.query_params.iter().any(|(k, _)| k == "format"),
+            "path-level param missing"
+        );
+        let post = ops
+            .iter()
+            .find(|o| o.import_key == "POST:/search")
+            .expect("POST");
+        assert!(
+            post.query_params.iter().any(|(k, _)| k == "format"),
+            "path-level param missing on POST"
+        );
     }
 
     #[test]
     fn import_keys_use_uppercase_method() {
         let ops = parse_spec(PETSTORE_3).expect("parse");
         for op in &ops {
-            assert_eq!(op.method, op.method.to_uppercase(), "method must be uppercase");
+            assert_eq!(
+                op.method,
+                op.method.to_uppercase(),
+                "method must be uppercase"
+            );
             assert!(
                 op.import_key.starts_with(&op.method),
                 "import_key must start with method"

@@ -1,9 +1,9 @@
 use eframe::egui;
 use std::{fs, time::Duration};
 
+use crate::openapi::source::fetch_url;
 use crate::openapi::{OpenApiError, compute_merge, parse_spec};
 use crate::openapi_import::PendingOpenApiImport;
-use crate::openapi::source::fetch_url;
 use crate::persistence::{FileStorage, persist_state, restore_workspace};
 use crate::request_prep::{active_resolution_values, prepare_request_draft};
 use crate::runtime::{AsyncRequest, AsyncRequestResult, Event, Runtime};
@@ -12,8 +12,8 @@ use crate::ui::intent::PanelIntent;
 use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::{request_preview_modal, shell};
 use crate::workspace::{
-    PendingWorkspaceImport, backup_workspace, preview_workspace_import,
-    read_workspace_bundle_file, workspace_bundle_from_json, workspace_bundle_to_json,
+    PendingWorkspaceImport, backup_workspace, preview_workspace_import, read_workspace_bundle_file,
+    workspace_bundle_from_json, workspace_bundle_to_json,
 };
 
 /// Snapshot of a submitted request kept until its response arrives.
@@ -31,7 +31,9 @@ struct PendingRequestContext {
 }
 
 struct PendingOAuthAuth {
-    rx: std::sync::mpsc::Receiver<Result<Option<crate::oauth::middleware::AttachmentHeader>, crate::oauth::OAuthError>>,
+    rx: std::sync::mpsc::Receiver<
+        Result<Option<crate::oauth::middleware::AttachmentHeader>, crate::oauth::OAuthError>,
+    >,
     prepared_request: AsyncRequest,
     request_index: usize,
 }
@@ -53,12 +55,18 @@ pub struct ProbeApp {
     pending_workspace_import: Option<PendingWorkspaceImport>,
     pending_request_preview: Option<PendingRequestPreview>,
     pending_openapi_import: Option<PendingOpenApiImport>,
-    pending_openapi_fetch: Option<(String, std::sync::mpsc::Receiver<Result<String, OpenApiError>>)>,
+    pending_openapi_fetch: Option<(
+        String,
+        std::sync::mpsc::Receiver<Result<String, OpenApiError>>,
+    )>,
     pending_oauth_auth: Option<PendingOAuthAuth>,
     openapi_url_input: String,
     openapi_url_dialog_open: bool,
     theme_installed: bool,
     response_viewer: ResponseViewerState,
+    /// Transient state for the settings-window panels (environment editor +
+    /// OAuth), held here rather than in process-global statics.
+    panels: crate::ui::panel_state::PanelUiState,
     saved_requests: Vec<crate::state::RequestDraft>,
     saved_environments: Vec<crate::state::Environment>,
     pending_close: bool,
@@ -96,6 +104,7 @@ impl ProbeApp {
                     openapi_url_dialog_open: false,
                     theme_installed: false,
                     response_viewer: ResponseViewerState::new(),
+                    panels: crate::ui::panel_state::PanelUiState::default(),
                     saved_requests,
                     saved_environments,
                     pending_close: false,
@@ -120,6 +129,7 @@ impl ProbeApp {
                 openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                panels: crate::ui::panel_state::PanelUiState::default(),
                 pending_close: false,
                 pending_intents: Vec::new(),
             },
@@ -139,6 +149,7 @@ impl ProbeApp {
                 openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                panels: crate::ui::panel_state::PanelUiState::default(),
                 saved_requests: Vec::new(),
                 saved_environments: Vec::new(),
                 pending_close: false,
@@ -160,6 +171,7 @@ impl ProbeApp {
                 openapi_url_dialog_open: false,
                 theme_installed: false,
                 response_viewer: ResponseViewerState::new(),
+                panels: crate::ui::panel_state::PanelUiState::default(),
                 saved_requests: Vec::new(),
                 saved_environments: Vec::new(),
                 pending_close: false,
@@ -357,8 +369,10 @@ impl ProbeApp {
         self.save_snapshot();
         self.status = format!(
             "OpenAPI import applied from {} ({} new, {} updated, {} unchanged)",
-            pending.source, pending.preview.new_count,
-            pending.preview.updated_count, pending.preview.unchanged_count
+            pending.source,
+            pending.preview.new_count,
+            pending.preview.updated_count,
+            pending.preview.unchanged_count
         );
     }
 
@@ -745,9 +759,7 @@ impl eframe::App for ProbeApp {
                                 summary.timing_ms = Some(info.duration_ms);
                                 summary.size_bytes = Some(info.body.len());
                                 summary.response_headers =
-                                    crate::runtime::types::redact_sensitive_headers(
-                                        &info.headers,
-                                    );
+                                    crate::runtime::types::redact_sensitive_headers(&info.headers);
                                 summary.content_type =
                                     info.header("content-type").or_else(|| info.media_hint());
                                 summary.header_count = Some(info.header_count());
@@ -834,23 +846,17 @@ impl eframe::App for ProbeApp {
                         {
                             self.import_workspace();
                         }
-                        let openapi_busy = self.pending_openapi_import.is_some()
-                            || self.openapi_url_dialog_open;
+                        let openapi_busy =
+                            self.pending_openapi_import.is_some() || self.openapi_url_dialog_open;
                         if ui
-                            .add_enabled(
-                                !openapi_busy,
-                                egui::Button::new("OpenAPI").small(),
-                            )
+                            .add_enabled(!openapi_busy, egui::Button::new("OpenAPI").small())
                             .on_hover_text("Import from OpenAPI / Swagger file")
                             .clicked()
                         {
                             self.import_openapi_file();
                         }
                         if ui
-                            .add_enabled(
-                                !openapi_busy,
-                                egui::Button::new("OA URL").small(),
-                            )
+                            .add_enabled(!openapi_busy, egui::Button::new("OA URL").small())
                             .on_hover_text("Import from OpenAPI / Swagger URL")
                             .clicked()
                         {
@@ -860,31 +866,46 @@ impl eframe::App for ProbeApp {
                             self.pending_intents.push(PanelIntent::ClearResponses);
                         }
 
-                        ui.with_layout(
-                            egui::Layout::right_to_left(egui::Align::Center),
-                            |ui| {
-                                if let Some(resp) = self.state.latest_response() {
-                                    if let Some(code) = resp.status {
-                                        let timing = resp
-                                            .timing_ms
-                                            .map(|t| format!(" · {t}ms"))
-                                            .unwrap_or_default();
-                                        ui.label(
-                                            egui::RichText::new(format!("Last {code}{timing}"))
-                                                .monospace()
-                                                .color(crate::ui::theme::status_color(Some(code)))
-                                                .small(),
-                                        );
-                                    }
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if let Some(resp) = self.state.latest_response() {
+                                if let Some(code) = resp.status {
+                                    let timing = resp
+                                        .timing_ms
+                                        .map(|t| format!(" · {t}ms"))
+                                        .unwrap_or_default();
+                                    ui.label(
+                                        egui::RichText::new(format!("Last {code}{timing}"))
+                                            .monospace()
+                                            .color(crate::ui::theme::status_color(Some(code)))
+                                            .small(),
+                                    );
                                 }
+                            }
+                            ui.add_space(12.0);
+                            ui.label(
+                                egui::RichText::new(&self.status)
+                                    .color(crate::ui::theme::TEXT_MUTED)
+                                    .small(),
+                            );
+                            // Persistent worker-health indicator: if the
+                            // runtime failed to start (or exited), the
+                            // fleeting status line is not enough — surface
+                            // it as a standing badge so the failure is
+                            // never swallowed once `status` changes.
+                            if self.runtime.is_none() {
                                 ui.add_space(12.0);
                                 ui.label(
-                                    egui::RichText::new(&self.status)
-                                        .color(crate::ui::theme::TEXT_MUTED)
-                                        .small(),
+                                    egui::RichText::new("⚠ Runtime offline")
+                                        .color(crate::ui::theme::DANGER)
+                                        .small()
+                                        .strong(),
+                                )
+                                .on_hover_text(
+                                    "The HTTP worker is not running; requests cannot be sent. \
+                                         See the status message for the cause, then restart Probe.",
                                 );
-                            },
-                        );
+                            }
+                        });
                     });
                 });
         });
@@ -893,6 +914,7 @@ impl eframe::App for ProbeApp {
             ui,
             &mut self.state,
             &mut self.response_viewer,
+            &mut self.panels,
             &mut self.pending_intents,
             self.pending_request.is_some(),
         );
@@ -906,7 +928,8 @@ impl eframe::App for ProbeApp {
         self.show_request_preview(ui.ctx());
 
         if ui.ctx().input(|i| i.viewport().close_requested()) && self.has_unsaved_changes() {
-            ui.ctx().send_viewport_cmd(egui::ViewportCommand::CancelClose);
+            ui.ctx()
+                .send_viewport_cmd(egui::ViewportCommand::CancelClose);
             self.pending_close = true;
         }
         self.show_unsaved_changes_dialog(ui.ctx());
@@ -917,6 +940,10 @@ impl eframe::App for ProbeApp {
 /// `ProbeApp::apply_intent` so unit tests can exercise every variant
 /// without standing up a runtime, storage, or eframe context.
 fn apply_intent_to_state(state: &mut AppState, intent: PanelIntent) {
+    // Every applied intent counts as one mutation, regardless of which
+    // variant it is — bump once, up front, so the revision is a reliable
+    // "something was applied" signal for dirty-tracking.
+    state.bump_revision();
     match intent {
         // ---- Collection-level request operations -------------------------
         PanelIntent::AddDefaultRequest => {
@@ -1026,11 +1053,11 @@ fn apply_intent_to_state(state: &mut AppState, intent: PanelIntent) {
             }
             let active_index = state.active_environment_index();
             let name_in_use = active_index.is_some_and(|active| {
-                state.environments.iter().enumerate().any(
-                    |(index, environment)| {
-                        index != active && environment.name == trimmed
-                    },
-                )
+                state
+                    .environments
+                    .iter()
+                    .enumerate()
+                    .any(|(index, environment)| index != active && environment.name == trimmed)
             });
             if name_in_use {
                 return;
@@ -1080,7 +1107,6 @@ fn apply_pending_request_context(
     summary.request_headers = pending_context.headers.clone();
 }
 
-
 fn create_storage() -> Option<FileStorage> {
     match FileStorage::new("./data") {
         Ok(storage) => Some(storage),
@@ -1099,7 +1125,9 @@ mod apply_intent_tests {
 
     fn state_with_one_request() -> AppState {
         let mut state = AppState::new();
-        let _ = state.try_add_request("GET", "https://example.com/").unwrap();
+        let _ = state
+            .try_add_request("GET", "https://example.com/")
+            .unwrap();
         state.ui.select_request(0);
         state
     }
@@ -1116,6 +1144,32 @@ mod apply_intent_tests {
         );
         assert_eq!(state.requests[0].method, "POST");
         assert_eq!(state.requests[0].url, "https://example.com/");
+    }
+
+    #[test]
+    fn each_applied_intent_bumps_revision_exactly_once() {
+        let mut state = state_with_one_request();
+        let start = state.revision();
+
+        apply_intent_to_state(
+            &mut state,
+            PanelIntent::SetRequestMethod {
+                index: 0,
+                method: "POST".into(),
+            },
+        );
+        assert_eq!(state.revision(), start + 1);
+
+        // A no-op-looking intent (out-of-range index) still counts as one
+        // applied intent — the funnel bumps up front, before dispatch.
+        apply_intent_to_state(
+            &mut state,
+            PanelIntent::SetRequestMethod {
+                index: 999,
+                method: "PUT".into(),
+            },
+        );
+        assert_eq!(state.revision(), start + 2);
     }
 
     #[test]
@@ -1370,7 +1424,9 @@ mod apply_intent_tests {
     #[test]
     fn clear_responses_drops_history_and_selection() {
         let mut state = state_with_one_request();
-        state.responses.push(crate::state::ResponseSummary::default());
+        state
+            .responses
+            .push(crate::state::ResponseSummary::default());
         state.ui.select_response(0);
 
         apply_intent_to_state(&mut state, PanelIntent::ClearResponses);
@@ -1378,4 +1434,3 @@ mod apply_intent_tests {
         assert_eq!(state.ui.selected_response, None);
     }
 }
-
