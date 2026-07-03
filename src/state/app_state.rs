@@ -235,6 +235,16 @@ impl AppState {
         index
     }
 
+    /// Add a fully-populated request (e.g. from a cURL import), select it, and
+    /// clear any selected response so the editor shows the new request.
+    pub fn add_imported_request(&mut self, request: RequestDraft) -> usize {
+        let index = self.add_request(request);
+        self.ui.select_request(index);
+        self.ui.clear_selected_response();
+        self.ensure_valid_selection();
+        index
+    }
+
     pub fn duplicate_selected_request(&mut self) -> Option<usize> {
         let selected_request = self.selected_request_index()?;
         let duplicated_request = self.requests.get(selected_request)?.duplicate();

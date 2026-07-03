@@ -11,4 +11,5 @@ Severity tags (`C` = critical, `M` = medium, `Minor`) carry over from the code r
 
 _No open items._ All backlog items from the consolidated code review are
 done — see [`docs/DONE.md`](docs/DONE.md) (M5, M7, panel static-mutex
-migration, and the `clippy::dbg_macro` lint landed on `feature/refactor`).
+migration, the `clippy::dbg_macro` lint, and cURL paste import landed on
+`feature/refactor`).

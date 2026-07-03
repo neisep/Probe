@@ -115,7 +115,15 @@ fn show_header_row(
                     .desired_width(ui.available_width())
                     .hint_text("https://example.com/path"),
             );
-            if url_response.lost_focus() {
+            if crate::curl_format::looks_like_curl(&url_buf)
+                && (url_response.lost_focus() || url_buf != current_url)
+            {
+                // Pasting a `curl …` command imports it as a new request
+                // instead of overwriting this request's URL. No SetRequestUrl
+                // is pushed, so the current request is left untouched and the
+                // transient text clears next frame.
+                intents.push(PanelIntent::ImportCurlAsRequest { curl: url_buf });
+            } else if url_response.lost_focus() {
                 // Apply the URL normaliser (splits ?query into params).
                 intents.push(PanelIntent::SetRequestUrl {
                     index: selected_index,

@@ -4,6 +4,7 @@
 #![warn(clippy::dbg_macro)]
 
 mod app;
+mod curl_format;
 mod http_format;
 mod oauth;
 mod openapi;

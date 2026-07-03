@@ -24,6 +24,12 @@ pub enum PanelIntent {
     AddDefaultRequest,
     DuplicateSelectedRequest,
     RemoveSelectedRequest,
+    /// Parse a pasted cURL command and add it as a new request. Handled in
+    /// `app.rs::apply_intent` (not the state-only funnel) because success/
+    /// failure is reported through `self.status`.
+    ImportCurlAsRequest {
+        curl: String,
+    },
 
     // ---- Single-request edits ----------------------------------------------
     /// Set the HTTP method on the request at `index`.

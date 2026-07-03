@@ -134,3 +134,35 @@ items below that are follow-ups completed afterwards.
   `dbg!(…)` that would dump secret-bearing structs to stderr, bypassing the
   `Debug`-redaction work.
   Evidence: `src/main.rs:1`. Verified: `cargo clippy` clean (no `dbg!` calls).
+
+---
+
+## Feature work
+
+- [x] **cURL paste import (URL-bar auto-detect → new request)** _(wishlist #21, Tier 2)_
+
+  Paste a `curl …` command into the request URL field and get a fully-populated
+  new request. New self-contained `src/curl_format/` module mirroring the
+  `.http` importer: `tokenizer.rs` (shell-style tokenizer — single/double
+  quotes, backslash + `\`-newline / `^`-newline continuations, run
+  concatenation) and `parser.rs` (`parse_curl` maps `-X`/`--request`, `-H`,
+  `-d`/`--data*`/`--json`, `-u`/`--user`, bearer + `--oauth2-bearer`, `-F`/`@file`
+  best-effort, query-string splitting via `RequestDraft::adopt_url_query`, and
+  curl's method defaulting). Surfaced through a new
+  `PanelIntent::ImportCurlAsRequest`, handled in `ProbeApp::apply_intent` (parse
+  → `AppState::add_imported_request` → select + `View::Editor`; errors reported
+  in `self.status`, no state change). URL-bar routing gated on
+  `curl_format::looks_like_curl`, so pasting a curl command creates a new
+  request non-destructively while a plain URL behaves as before.
+  Scope this pass: URL-bar auto-detect only (dedicated dialog, global clipboard
+  paste, and reverse "copy as curl" deferred; the parser is structured so those
+  are thin add-ons).
+  Evidence: `src/curl_format/{mod,tokenizer,parser}.rs`, `src/main.rs`
+  (`mod curl_format;`), `src/ui/intent.rs` (`ImportCurlAsRequest`),
+  `src/app.rs` (`apply_intent` handler + funnel no-op arm),
+  `src/state/app_state.rs` (`add_imported_request`), `src/ui/request_panel.rs`
+  (URL-bar detection).
+  Verified: full suite 187 passed (incl. tokenizer + parser unit tests);
+  `cargo clippy` clean for `curl_format`; `cargo fmt` applied.
+  Note: GUI paste path not exercised headlessly — the parse → `RequestDraft`
+  mapping (including the realistic dev-tools command) is covered by unit tests.

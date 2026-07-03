@@ -602,6 +602,24 @@ impl ProbeApp {
     }
 
     fn apply_intent(&mut self, intent: PanelIntent) {
+        // cURL import reports success/failure via `self.status`, which the
+        // state-only funnel can't reach, so handle it here.
+        if let PanelIntent::ImportCurlAsRequest { curl } = &intent {
+            match crate::curl_format::parse_curl(curl) {
+                Ok(draft) => {
+                    let method = draft.method.clone();
+                    self.state.bump_revision();
+                    let index = self.state.add_imported_request(draft);
+                    self.state.ui.select_request(index);
+                    self.state.ui.set_view(View::Editor);
+                    self.status = format!("Imported cURL as {method} request");
+                }
+                Err(error) => {
+                    self.status = format!("cURL import failed: {error}");
+                }
+            }
+            return;
+        }
         let was_clear = matches!(intent, PanelIntent::ClearResponses);
         apply_intent_to_state(&mut self.state, intent);
         if was_clear {
@@ -961,6 +979,9 @@ fn apply_intent_to_state(state: &mut AppState, intent: PanelIntent) {
             let _ = state.remove_selected_request();
             state.ui.set_view(View::Editor);
         }
+        // Handled in `ProbeApp::apply_intent` (needs `self.status`); never
+        // reaches this state-only funnel.
+        PanelIntent::ImportCurlAsRequest { .. } => {}
 
         // ---- Single-request edits ----------------------------------------
         PanelIntent::SetRequestMethod { index, method } => {
