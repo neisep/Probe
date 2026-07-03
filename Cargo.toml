@@ -8,7 +8,7 @@ keyring-storage = ["dep:keyring"]
 
 [dependencies]
 base64 = "0.22.1"
-eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
+eframe = { version = "0.34.1", default-features = false, features = ["default_fonts", "wgpu", "x11", "wayland"] }
 keyring = { version = "3", default-features = false, features = ["linux-native", "apple-native", "windows-native"], optional = true }
 openapiv3 = "2"
 serde_yaml = "0.9"

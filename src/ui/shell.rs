@@ -1,7 +1,9 @@
 use eframe::egui;
 
 use crate::state::AppState;
+use crate::ui::intent::PanelIntent;
 use crate::ui::left_sidebar::environment_editor;
+use crate::ui::panel_state::PanelUiState;
 use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::theme;
 use crate::ui::{center_panel, left_sidebar, top_bar};
@@ -10,18 +12,25 @@ pub fn show(
     ui: &mut egui::Ui,
     state: &mut AppState,
     viewer: &mut ResponseViewerState,
+    panels: &mut PanelUiState,
+    intents: &mut Vec<PanelIntent>,
     pending: bool,
 ) {
     let active_view = state.ui.view;
 
     top_bar::show_topbar(ui, state, active_view);
-    left_sidebar::show_sidebar(ui, state);
-    center_panel::show_center(ui, state, viewer, pending);
+    left_sidebar::show_sidebar(ui, state, intents);
+    center_panel::show_center(ui, state, viewer, intents, pending);
 
-    show_settings_window(ui.ctx(), state);
+    show_settings_window(ui.ctx(), state, panels, intents);
 }
 
-fn show_settings_window(ctx: &egui::Context, state: &mut AppState) {
+fn show_settings_window(
+    ctx: &egui::Context,
+    state: &mut AppState,
+    panels: &mut PanelUiState,
+    intents: &mut Vec<PanelIntent>,
+) {
     let mut open = state.ui.settings_open;
     if !open {
         return;
@@ -42,11 +51,11 @@ fn show_settings_window(ctx: &egui::Context, state: &mut AppState) {
             egui::ScrollArea::vertical()
                 .auto_shrink([false, false])
                 .show(ui, |ui| {
-                    environment_editor::show_sidebar_section(ui, state);
+                    environment_editor::show_sidebar_section(ui, state, panels, intents);
                     ui.add_space(10.0);
                     ui.separator();
                     ui.add_space(6.0);
-                    environment_editor::show_request_section(ui, state);
+                    environment_editor::show_request_section(ui, state, panels, intents);
                 });
         });
 

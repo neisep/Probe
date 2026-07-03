@@ -53,7 +53,11 @@ where
     for scope in &config.scopes {
         device_req = device_req.add_scope(Scope::new(scope.clone()));
     }
-    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_token_params) {
+    for (k, v) in collect_extra_params(
+        config.audience.as_deref(),
+        config.resource.as_deref(),
+        &config.extra_token_params,
+    ) {
         device_req = device_req.add_extra_param(k, v);
     }
 
@@ -99,8 +103,12 @@ fn build_client(config: &DeviceCodeConfig) -> Result<BasicClient, OAuthError> {
     let device_auth_url = DeviceAuthorizationUrl::new(config.device_auth_url.clone())
         .map_err(|e| OAuthError::Config(format!("device_auth_url: {e}")))?;
 
-    build_basic_client_with_token_only(&config.client_id, config.client_secret.as_deref(), token_url)
-        .map(|c| c.set_device_authorization_url(device_auth_url))
+    build_basic_client_with_token_only(
+        &config.client_id,
+        config.client_secret.as_deref(),
+        token_url,
+    )
+    .map(|c| c.set_device_authorization_url(device_auth_url))
 }
 
 #[cfg(test)]

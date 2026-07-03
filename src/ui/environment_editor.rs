@@ -1,7 +1,8 @@
 use crate::state::AppState;
+use crate::ui::intent::PanelIntent;
+use crate::ui::panel_state::PanelUiState;
 use eframe::egui;
 use std::collections::BTreeMap;
-use std::sync::{Mutex, OnceLock};
 
 #[derive(Clone, Default, PartialEq, Eq)]
 struct EnvironmentVariableRow {
@@ -16,8 +17,10 @@ enum EnvTab {
     Auth,
 }
 
+/// Transient state for the environment editor panel. Held on `PanelUiState`
+/// (owned by `ProbeApp`) and passed in by reference each frame.
 #[derive(Default)]
-struct EnvironmentEditorUiState {
+pub struct EnvironmentEditorUiState {
     synced_environment: Option<usize>,
     name_buffer: String,
     variable_rows: Vec<EnvironmentVariableRow>,
@@ -55,19 +58,6 @@ impl EnvironmentEditorUiState {
     }
 }
 
-static ENVIRONMENT_EDITOR_STATE: OnceLock<Mutex<EnvironmentEditorUiState>> = OnceLock::new();
-
-fn environment_editor_state() -> &'static Mutex<EnvironmentEditorUiState> {
-    ENVIRONMENT_EDITOR_STATE.get_or_init(|| Mutex::new(EnvironmentEditorUiState::default()))
-}
-
-fn with_editor_state<R>(f: impl FnOnce(&mut EnvironmentEditorUiState) -> R) -> Option<R> {
-    match environment_editor_state().lock() {
-        Ok(mut state) => Some(f(&mut state)),
-        Err(_poisoned) => None,
-    }
-}
-
 fn pluralize(count: usize, singular: &str, plural: &str) -> String {
     if count == 1 {
         format!("1 {singular}")
@@ -76,22 +66,11 @@ fn pluralize(count: usize, singular: &str, plural: &str) -> String {
     }
 }
 
-fn next_environment_name(state: &AppState) -> String {
-    let mut next_index = state.environments.len().saturating_add(1);
-
-    loop {
-        let candidate = format!("Env {next_index}");
-        if state.find_environment_index(&candidate).is_none() {
-            return candidate;
-        }
-        next_index += 1;
-    }
-}
-
-fn apply_variable_rows(
+/// Build the variable map from the editor rows. Returns the committed map
+/// plus diagnostic flags for the UI to surface.
+fn collect_variable_rows(
     editor: &EnvironmentEditorUiState,
-    state: &mut AppState,
-) -> (bool, bool, usize) {
+) -> (BTreeMap<String, String>, bool, bool) {
     let mut variables = BTreeMap::new();
     let mut has_pending_key = false;
     let mut has_duplicate_key = false;
@@ -113,13 +92,7 @@ fn apply_variable_rows(
         }
     }
 
-    let committed_count = variables.len();
-
-    if let Some(environment) = state.active_environment_mut() {
-        environment.vars = variables;
-    }
-
-    (has_pending_key, has_duplicate_key, committed_count)
+    (variables, has_pending_key, has_duplicate_key)
 }
 
 pub fn active_environment_label(state: &AppState) -> String {
@@ -129,11 +102,17 @@ pub fn active_environment_label(state: &AppState) -> String {
         .unwrap_or_else(|| "No environment".to_owned())
 }
 
-pub fn show_sidebar_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn show_sidebar_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    panels: &mut PanelUiState,
+    intents: &mut Vec<PanelIntent>,
+) {
     state.ensure_valid_environment_selection();
     ui.heading("Environment");
 
-    let rendered = with_editor_state(|editor| {
+    {
+        let editor = &mut panels.environment_editor;
         editor.sync_from_state(state);
 
         let environment_choices: Vec<(String, String)> = state
@@ -166,11 +145,7 @@ pub fn show_sidebar_section(ui: &mut egui::Ui, state: &mut AppState) {
                 });
 
             if ui.small_button("New").clicked() {
-                let name = next_environment_name(state);
-                if state.add_environment(&name).is_ok() {
-                    let _ = state.select_environment(&name);
-                    editor.force_sync_from_state(state);
-                }
+                intents.push(PanelIntent::AddAutoNamedEnvironment);
             }
 
             if ui
@@ -179,23 +154,21 @@ pub fn show_sidebar_section(ui: &mut egui::Ui, state: &mut AppState) {
                     egui::Button::new("Del").small(),
                 )
                 .clicked()
+                && let Some(name) = state.active_environment_name().map(str::to_owned)
             {
-                if let Some(name) = state.active_environment_name().map(str::to_owned) {
-                    let _removed = state.remove_environment(&name);
-                    editor.force_sync_from_state(state);
-                }
+                intents.push(PanelIntent::RemoveEnvironment { name });
             }
         });
 
         if let Some(name) = selected_environment {
-            let _ = state.select_environment(&name);
-            editor.force_sync_from_state(state);
+            intents.push(PanelIntent::SelectEnvironment { name });
         }
 
         let mut rename_error = None;
         ui.add_space(4.0);
         ui.horizontal(|ui| {
             ui.label("Name");
+            let original_name = editor.name_buffer.clone();
             let rename_response = ui.add(
                 egui::TextEdit::singleline(&mut editor.name_buffer)
                     .desired_width(180.0)
@@ -222,11 +195,13 @@ pub fn show_sidebar_section(ui: &mut egui::Ui, state: &mut AppState) {
                 None
             };
 
-            if rename_response.changed() && rename_error.is_none() {
-                if let Some(environment) = state.active_environment_mut() {
-                    environment.name = normalized_name.clone();
-                    editor.name_buffer = normalized_name;
-                }
+            if rename_response.changed()
+                && rename_error.is_none()
+                && editor.name_buffer != original_name
+            {
+                intents.push(PanelIntent::RenameActiveEnvironment {
+                    new_name: normalized_name,
+                });
             }
         });
 
@@ -239,17 +214,24 @@ pub fn show_sidebar_section(ui: &mut egui::Ui, state: &mut AppState) {
                 "variables",
             ));
         }
-    });
-
-    if rendered.is_none() {
-        ui.small("Environment editor unavailable");
     }
 }
 
-pub fn show_request_section(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn show_request_section(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    panels: &mut PanelUiState,
+    intents: &mut Vec<PanelIntent>,
+) {
     state.ensure_valid_environment_selection();
 
-    let rendered = with_editor_state(|editor| {
+    {
+        // Disjoint borrows of the two transient panel states so the Auth tab
+        // can mutate the OAuth panel while the editor is also borrowed.
+        let PanelUiState {
+            environment_editor: editor,
+            oauth,
+        } = panels;
         editor.sync_from_state(state);
 
         egui::CollapsingHeader::new("Environment")
@@ -277,17 +259,12 @@ pub fn show_request_section(ui: &mut egui::Ui, state: &mut AppState) {
                 ui.separator();
 
                 match editor.active_tab {
-                    EnvTab::Variables => render_variables_tab(ui, editor, state),
-                    EnvTab::Auth => crate::ui::oauth_panel::show(ui, state),
+                    EnvTab::Variables => render_variables_tab(ui, editor, state, intents),
+                    EnvTab::Auth => {
+                        let env_name = state.active_environment_name();
+                        crate::ui::oauth_panel::show(ui, oauth, env_name);
+                    }
                 }
-            });
-    });
-
-    if rendered.is_none() {
-        egui::CollapsingHeader::new("Environment")
-            .default_open(true)
-            .show(ui, |ui| {
-                ui.small("Environment editor unavailable");
             });
     }
 }
@@ -295,7 +272,8 @@ pub fn show_request_section(ui: &mut egui::Ui, state: &mut AppState) {
 fn render_variables_tab(
     ui: &mut egui::Ui,
     editor: &mut EnvironmentEditorUiState,
-    state: &mut AppState,
+    state: &AppState,
+    intents: &mut Vec<PanelIntent>,
 ) {
     ui.horizontal(|ui| {
         ui.small("Variables are edited per active environment.");
@@ -307,6 +285,7 @@ fn render_variables_tab(
     });
 
     let mut remove_index = None;
+    let rows_before: Vec<EnvironmentVariableRow> = editor.variable_rows.clone();
     for (index, variable) in editor.variable_rows.iter_mut().enumerate() {
         ui.horizontal(|ui| {
             ui.add(
@@ -326,17 +305,26 @@ fn render_variables_tab(
         });
     }
 
-    if let Some(index) = remove_index {
-        if index < editor.variable_rows.len() {
-            editor.variable_rows.remove(index);
-        }
+    if let Some(index) = remove_index
+        && index < editor.variable_rows.len()
+    {
+        editor.variable_rows.remove(index);
     }
 
     if editor.variable_rows.is_empty() {
         ui.monospace("No variables. Use + Add to create one.");
     }
 
-    let (has_pending_key, has_duplicate_key, committed_count) = apply_variable_rows(editor, state);
+    let rows_changed = editor.variable_rows != rows_before || remove_index.is_some();
+    let (variables, has_pending_key, has_duplicate_key) = collect_variable_rows(editor);
+
+    if rows_changed && let Some(name) = state.active_environment_name().map(str::to_owned) {
+        intents.push(PanelIntent::SetEnvironmentVars {
+            name,
+            vars: variables.clone(),
+        });
+    }
+    let committed_count = variables.len();
 
     if has_pending_key {
         ui.small(

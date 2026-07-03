@@ -1,11 +1,9 @@
 use oauth2::basic::BasicClient;
 use oauth2::reqwest::async_http_client;
-use oauth2::{
-    AuthUrl, ClientId, ClientSecret, RefreshToken, TokenUrl,
-};
+use oauth2::{AuthUrl, ClientId, ClientSecret, RefreshToken, TokenUrl};
 
-use crate::oauth::{FlowKind, OAuthError, Token};
 use super::build_cached_token;
+use crate::oauth::{FlowKind, OAuthError, Token};
 
 #[derive(Debug, Clone)]
 pub struct RefreshConfig {
@@ -48,7 +46,6 @@ pub async fn run(
         Some(config.refresh_token.as_str()),
     ))
 }
-
 
 #[cfg(test)]
 mod tests {

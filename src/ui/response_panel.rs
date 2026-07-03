@@ -30,7 +30,9 @@ pub fn show_response_history(ui: &mut egui::Ui, state: &mut AppState) {
     if state.ui.selected_request.is_none() {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.label(egui::RichText::new("Select a request to see its history").color(theme::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new("Select a request to see its history").color(theme::TEXT_MUTED),
+            );
         });
         return;
     }
@@ -38,7 +40,9 @@ pub fn show_response_history(ui: &mut egui::Ui, state: &mut AppState) {
     if scoped_indices.is_empty() {
         ui.vertical_centered(|ui| {
             ui.add_space(60.0);
-            ui.label(egui::RichText::new("No responses for this request yet").color(theme::TEXT_MUTED));
+            ui.label(
+                egui::RichText::new("No responses for this request yet").color(theme::TEXT_MUTED),
+            );
         });
         return;
     }

@@ -26,19 +26,6 @@ impl Environment {
         })
     }
 
-    pub fn set_var(&mut self, key: &str, value: &str) -> Result<Option<String>> {
-        let normalized_key = key.trim();
-        if normalized_key.is_empty() {
-            return Err(StateError::InvalidInput(
-                "environment variable key cannot be empty".to_owned(),
-            ));
-        }
-
-        Ok(self
-            .vars
-            .insert(normalized_key.to_owned(), value.to_owned()))
-    }
-
     #[allow(dead_code)]
     pub fn remove_var(&mut self, key: &str) -> Option<String> {
         let normalized_key = key.trim();
@@ -47,15 +34,6 @@ impl Environment {
         }
 
         self.vars.remove(normalized_key)
-    }
-
-    pub fn get_var(&self, key: &str) -> Option<&str> {
-        let normalized_key = key.trim();
-        if normalized_key.is_empty() {
-            return None;
-        }
-
-        self.vars.get(normalized_key).map(String::as_str)
     }
 }
 

@@ -7,8 +7,7 @@ use url::form_urlencoded;
 
 use super::OAuthError;
 
-const LOOPBACK_BIND_ADDR: SocketAddr =
-    SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
+const LOOPBACK_BIND_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 0));
 const LOOPBACK_READ_BUF_SIZE: usize = 4096;
 
 pub struct LoopbackListener {
@@ -72,15 +71,10 @@ impl LoopbackListener {
 
         let parts: Vec<&str> = first_line.split_whitespace().collect();
         if parts.len() < 2 {
-            return Err(OAuthError::Parse(format!(
-                "bad request line: {first_line}"
-            )));
+            return Err(OAuthError::Parse(format!("bad request line: {first_line}")));
         }
         let path_and_query = parts[1];
-        let query = path_and_query
-            .split_once('?')
-            .map(|(_, q)| q)
-            .unwrap_or("");
+        let query = path_and_query.split_once('?').map(|(_, q)| q).unwrap_or("");
 
         let params: HashMap<String, String> = form_urlencoded::parse(query.as_bytes())
             .into_owned()
@@ -124,7 +118,11 @@ mod tests {
     async fn loopback_parses_query_and_writes_200() {
         let listener = LoopbackListener::bind().await.unwrap();
         let port = listener.port;
-        assert!(listener.redirect_uri("/cb").starts_with("http://127.0.0.1:"));
+        assert!(
+            listener
+                .redirect_uri("/cb")
+                .starts_with("http://127.0.0.1:")
+        );
 
         let server = tokio::spawn(async move { listener.accept_once().await });
 
@@ -143,10 +141,7 @@ mod tests {
         let params = server.await.unwrap().unwrap();
         assert_eq!(params.get("code").map(String::as_str), Some("abc"));
         assert_eq!(params.get("state").map(String::as_str), Some("xyz"));
-        assert_eq!(
-            params.get("extra").map(String::as_str),
-            Some("hello world")
-        );
+        assert_eq!(params.get("extra").map(String::as_str), Some("hello world"));
     }
 
     #[tokio::test]

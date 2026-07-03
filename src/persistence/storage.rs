@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::http_format::{HttpFormatError, parse_request, write_request};
 use crate::persistence::models::{
@@ -90,10 +91,6 @@ impl FileStorage {
         Ok(Self { base_dir: base })
     }
 
-    pub fn base_dir(&self) -> &Path {
-        &self.base_dir
-    }
-
     // ---- Request (.http) APIs ---------------------------------------------
 
     pub fn save_request(&self, file: &RequestFile) -> Result<(), PersistenceError> {
@@ -103,30 +100,6 @@ impl FileStorage {
         }
         let text = write_request(&file.request);
         atomic_write(&path, text.as_bytes())
-    }
-
-    pub fn load_request(&self, relative_path: &str) -> Result<RequestFile, PersistenceError> {
-        let path = self.request_path(relative_path)?;
-        if !path.exists() {
-            return Err(PersistenceError::NotFound(path.display().to_string()));
-        }
-        let text = fs::read_to_string(&path)?;
-        let mut request = parse_request(&text)?;
-
-        let normalized = relative_path.trim_matches('/');
-        let (folder, stem) = match normalized.rsplit_once('/') {
-            Some((folder, stem)) => (folder.to_owned(), stem.to_owned()),
-            None => (String::new(), normalized.to_owned()),
-        };
-        request.set_folder_path(&folder);
-        if request.name.trim().is_empty() {
-            request.set_request_name(&stem);
-        }
-
-        Ok(RequestFile {
-            relative_path: normalized.to_owned(),
-            request,
-        })
     }
 
     pub fn delete_request(&self, relative_path: &str) -> Result<(), PersistenceError> {
@@ -280,8 +253,7 @@ impl FileStorage {
 
     /// Delete response and response-preview entries whose ID is not in `keep`.
     pub fn delete_stale_response_ids(&self, keep: &[String]) -> Result<(), PersistenceError> {
-        let keep_set: std::collections::BTreeSet<&str> =
-            keep.iter().map(String::as_str).collect();
+        let keep_set: std::collections::BTreeSet<&str> = keep.iter().map(String::as_str).collect();
         let existing = self.list_response_ids()?;
         for id in existing {
             if !keep_set.contains(id.as_str()) {
@@ -313,7 +285,8 @@ impl FileStorage {
         id: &str,
         detail: &ResponsePreviewDetail,
     ) -> Result<(), PersistenceError> {
-        let mut stored: StoredResponsePreview = self.read_internal_json(RESPONSE_PREVIEWS_DIR, id)?;
+        let mut stored: StoredResponsePreview =
+            self.read_internal_json(RESPONSE_PREVIEWS_DIR, id)?;
         stored.detail = detail.clone();
         self.write_internal_json(RESPONSE_PREVIEWS_DIR, id, &stored)
     }
@@ -447,12 +420,51 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), PersistenceError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    let tmp = path.with_extension("tmp");
-    let mut f = fs::File::create(&tmp)?;
-    f.write_all(data)?;
-    let _ = f.sync_all();
-    fs::rename(&tmp, path)?;
+
+    // Per-call unique suffix so concurrent writes to the same target don't
+    // stomp each other's in-flight temp file.
+    let tmp = unique_tmp_path(path);
+
+    let write_result = (|| -> io::Result<()> {
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(data)?;
+        // Propagate sync_all errors — silently swallowing them defeats the
+        // entire write-temp-then-rename pattern.
+        f.sync_all()?;
+        drop(f);
+        fs::rename(&tmp, path)
+    })();
+
+    if write_result.is_err() {
+        // Best-effort cleanup; we already have an error to return, so a
+        // failed cleanup is logged but doesn't override the original cause.
+        let _ = fs::remove_file(&tmp);
+    }
+    write_result?;
+
+    // Best-effort directory fsync on Unix so the rename is durable across
+    // a crash. Filesystems that don't support dir fsync return an error we
+    // intentionally ignore — the data fsync above is the load-bearing call.
+    #[cfg(unix)]
+    if let Some(parent) = path.parent()
+        && let Ok(dir) = fs::File::open(parent)
+    {
+        let _ = dir.sync_all();
+    }
+
     Ok(())
+}
+
+fn unique_tmp_path(path: &Path) -> PathBuf {
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let mut tmp = path.to_path_buf();
+    tmp.set_extension(format!("tmp.{nanos}.{n}"));
+    tmp
 }
 
 fn collect_http_files(
@@ -577,8 +589,12 @@ mod tests {
         };
         storage.save_request(&file).unwrap();
 
-        let loaded = storage.load_request("auth/me").unwrap();
-        assert_eq!(loaded.relative_path, "auth/me");
+        let loaded = storage
+            .list_requests()
+            .unwrap()
+            .into_iter()
+            .find(|f| f.relative_path == "auth/me")
+            .expect("saved request should be listed");
         assert_eq!(loaded.request.name, "Get user");
         assert_eq!(loaded.request.folder, "auth");
         assert_eq!(
@@ -675,14 +691,101 @@ mod tests {
     }
 
     #[test]
+    fn atomic_write_leaves_no_tmp_files_on_success() {
+        let base = temp_dir();
+        let target = base.join("ok.json");
+        atomic_write(&target, b"hello").expect("write should succeed");
+
+        assert_eq!(fs::read(&target).unwrap(), b"hello");
+        for entry in fs::read_dir(&base).unwrap() {
+            let path = entry.unwrap().path();
+            let name = path.file_name().unwrap().to_string_lossy().into_owned();
+            assert!(!name.starts_with("ok.tmp."), "leftover temp file: {name}");
+        }
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn atomic_write_cleans_up_tmp_when_rename_fails() {
+        // Force a rename failure by pointing at a target whose parent is a
+        // *file*, not a directory. fs::create_dir_all() then fails before
+        // the temp write begins, so we instead exercise a path whose
+        // *directory* exists but the rename can't land — easiest portable
+        // trigger: rename into a path that's already an existing dir.
+        let base = temp_dir();
+        let blocker = base.join("collision");
+        fs::create_dir_all(&blocker).expect("create blocking dir");
+        // Now atomic_write to `base/collision` — rename of a file onto a
+        // non-empty directory is an error on every supported platform.
+        let result = atomic_write(&blocker, b"payload");
+        assert!(result.is_err(), "rename onto a dir must fail");
+
+        // The unique-suffix temp file must be cleaned up.
+        let leftover: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("collision.tmp."))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "expected no .tmp leftovers, found: {leftover:?}"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn atomic_write_concurrent_writers_do_not_stomp() {
+        // Two threads writing to the same target with unique temp suffixes
+        // must both succeed; the final file is one of the two payloads,
+        // and no .tmp file is left behind.
+        let base = temp_dir();
+        let target = base.join("contended.json");
+
+        let t1 = {
+            let target = target.clone();
+            std::thread::spawn(move || atomic_write(&target, b"writer-one"))
+        };
+        let t2 = {
+            let target = target.clone();
+            std::thread::spawn(move || atomic_write(&target, b"writer-two"))
+        };
+        t1.join().expect("t1 join").expect("t1 write");
+        t2.join().expect("t2 join").expect("t2 write");
+
+        let final_contents = fs::read(&target).expect("target exists");
+        assert!(
+            final_contents == b"writer-one" || final_contents == b"writer-two",
+            "final contents must be exactly one writer's payload: {final_contents:?}"
+        );
+
+        let leftover: Vec<_> = fs::read_dir(&base)
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+            .filter(|n| n.starts_with("contended.tmp."))
+            .collect();
+        assert!(
+            leftover.is_empty(),
+            "expected no .tmp leftovers, found: {leftover:?}"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
     fn invalid_relative_paths_are_rejected() {
         let base = temp_dir();
         let storage = FileStorage::new(&base).unwrap();
 
         for bad in ["", "/abs", "..", "a/..", "a/./b", "a\\b", "a:b"] {
+            let file = RequestFile {
+                relative_path: bad.to_owned(),
+                request: RequestDraft::default_request(),
+            };
             assert!(
                 matches!(
-                    storage.load_request(bad),
+                    storage.save_request(&file),
                     Err(PersistenceError::InvalidPath(_))
                 ),
                 "should reject {bad}"

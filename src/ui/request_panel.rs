@@ -3,14 +3,19 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use crate::oauth::config::slugify_env_id;
 use crate::oauth::{FlowKind, TokenStore, token_store};
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
-use crate::state::{AppState, RequestDraft, RequestTab};
+use crate::state::{AppState, RequestTab};
+use crate::ui::intent::PanelIntent;
 use crate::ui::theme;
 use eframe::egui;
 
-pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
+pub fn show_request_editor(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    intents: &mut Vec<PanelIntent>,
+) {
     let mut queue_preview_for_selected = false;
 
-    show_header_row(ui, state, &mut queue_preview_for_selected);
+    show_header_row(ui, state, intents, &mut queue_preview_for_selected);
     ui.add_space(8.0);
 
     if state.selected_request_index().is_none() {
@@ -19,9 +24,7 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
                 .color(theme::TEXT_MUTED)
                 .italics(),
         );
-        if queue_preview_for_selected
-            && let Some(selected_index) = state.selected_request_index()
-        {
+        if queue_preview_for_selected && let Some(selected_index) = state.selected_request_index() {
             state.ui.queue_preview_request(selected_index);
         }
         return;
@@ -31,27 +34,37 @@ pub fn show_request_editor(ui: &mut egui::Ui, state: &mut AppState) {
     ui.add_space(6.0);
 
     match state.ui.request_tab {
-        RequestTab::Params => show_params_tab(ui, state),
-        RequestTab::Auth => show_auth_tab(ui, state),
-        RequestTab::Headers => show_headers_tab(ui, state),
-        RequestTab::Body => show_body_tab(ui, state),
+        RequestTab::Params => show_params_tab(ui, state, intents),
+        RequestTab::Auth => show_auth_tab(ui, state, intents),
+        RequestTab::Headers => show_headers_tab(ui, state, intents),
+        RequestTab::Body => show_body_tab(ui, state, intents),
     }
 
-    if queue_preview_for_selected
-        && let Some(selected_index) = state.selected_request_index()
-    {
+    if queue_preview_for_selected && let Some(selected_index) = state.selected_request_index() {
         state.ui.queue_preview_request(selected_index);
     }
 }
 
-fn show_header_row(ui: &mut egui::Ui, state: &mut AppState, queue_preview: &mut bool) {
-    let can_preview = state.selected_request_index().is_some();
+fn show_header_row(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    intents: &mut Vec<PanelIntent>,
+    queue_preview: &mut bool,
+) {
+    let Some(selected_index) = state.selected_request_index() else {
+        ui.horizontal(|ui| {
+            ui.add_enabled(false, egui::Button::new("Send"));
+        });
+        return;
+    };
+
     let selected_method = state
         .selected_request()
         .map(|r| r.method.clone())
         .unwrap_or_default();
 
     ui.horizontal(|ui| {
+        let mut method_buf = selected_method.clone();
         egui::ComboBox::from_id_salt("request_method_picker")
             .selected_text(
                 egui::RichText::new(&selected_method)
@@ -62,19 +75,24 @@ fn show_header_row(ui: &mut egui::Ui, state: &mut AppState, queue_preview: &mut 
             .width(90.0)
             .show_ui(ui, |ui| {
                 let methods = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"];
-                if let Some(req) = state.selected_request_mut() {
-                    for &method in &methods {
-                        ui.selectable_value(&mut req.method, method.to_owned(), method);
-                    }
+                for &method in &methods {
+                    ui.selectable_value(&mut method_buf, method.to_owned(), method);
                 }
             });
+        if method_buf != selected_method {
+            intents.push(PanelIntent::SetRequestMethod {
+                index: selected_index,
+                method: method_buf,
+            });
+        }
 
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             if ui
-                .add_enabled(
-                    can_preview,
+                .add(
                     egui::Button::new(
-                        egui::RichText::new("Send").strong().color(theme::TEXT_STRONG),
+                        egui::RichText::new("Send")
+                            .strong()
+                            .color(theme::TEXT_STRONG),
                     )
                     .fill(theme::ACCENT.gamma_multiply(0.55)),
                 )
@@ -86,52 +104,94 @@ fn show_header_row(ui: &mut egui::Ui, state: &mut AppState, queue_preview: &mut 
 
             ui.add_space(6.0);
 
-            if let Some(req) = state.selected_request_mut() {
-                let url_response = ui.add(
-                    egui::TextEdit::singleline(&mut req.url)
-                        .font(egui::TextStyle::Monospace)
-                        .desired_width(ui.available_width())
-                        .hint_text("https://example.com/path"),
-                );
-                if url_response.lost_focus() {
-                    let url = req.url.clone();
-                    if url.contains('?') {
-                        req.adopt_url_query(&url);
-                    } else {
-                        req.set_url(&url);
-                    }
-                }
+            let current_url = state
+                .selected_request()
+                .map(|r| r.url.clone())
+                .unwrap_or_default();
+            let mut url_buf = current_url.clone();
+            let url_response = ui.add(
+                egui::TextEdit::singleline(&mut url_buf)
+                    .font(egui::TextStyle::Monospace)
+                    .desired_width(ui.available_width())
+                    .hint_text("https://example.com/path"),
+            );
+            if crate::curl_format::looks_like_curl(&url_buf)
+                && (url_response.lost_focus() || url_buf != current_url)
+            {
+                // Pasting a `curl …` command imports it as a new request
+                // instead of overwriting this request's URL. No SetRequestUrl
+                // is pushed, so the current request is left untouched and the
+                // transient text clears next frame.
+                intents.push(PanelIntent::ImportCurlAsRequest { curl: url_buf });
+            } else if url_response.lost_focus() {
+                // Apply the URL normaliser (splits ?query into params).
+                intents.push(PanelIntent::SetRequestUrl {
+                    index: selected_index,
+                    url: url_buf,
+                    commit: true,
+                });
+            } else if url_buf != current_url {
+                // Per-keystroke raw update so the displayed text follows
+                // the user's typing without triggering ?-query splitting.
+                intents.push(PanelIntent::SetRequestUrl {
+                    index: selected_index,
+                    url: url_buf,
+                    commit: false,
+                });
             }
         });
     });
 
     ui.add_space(4.0);
 
-    if let Some(req) = state.selected_request_mut() {
-        ui.horizontal(|ui| {
-            let name_response = ui.add(
-                egui::TextEdit::singleline(&mut req.name)
-                    .desired_width(240.0)
-                    .hint_text("Request name"),
-            );
-            if name_response.lost_focus() {
-                let name = req.name.clone();
-                req.set_request_name(&name);
-            }
+    let (current_name, current_folder) = state
+        .selected_request()
+        .map(|r| (r.name.clone(), r.folder.clone()))
+        .unwrap_or_default();
 
-            ui.label(egui::RichText::new("·").color(theme::TEXT_MUTED));
+    ui.horizontal(|ui| {
+        let mut name_buf = current_name.clone();
+        let name_response = ui.add(
+            egui::TextEdit::singleline(&mut name_buf)
+                .desired_width(240.0)
+                .hint_text("Request name"),
+        );
+        if name_response.lost_focus() {
+            intents.push(PanelIntent::SetRequestName {
+                index: selected_index,
+                name: name_buf,
+                commit: true,
+            });
+        } else if name_buf != current_name {
+            intents.push(PanelIntent::SetRequestName {
+                index: selected_index,
+                name: name_buf,
+                commit: false,
+            });
+        }
 
-            let folder_response = ui.add(
-                egui::TextEdit::singleline(&mut req.folder)
-                    .desired_width(200.0)
-                    .hint_text("Folder (optional)"),
-            );
-            if folder_response.lost_focus() {
-                let folder = req.folder.clone();
-                req.set_folder_path(&folder);
-            }
-        });
-    }
+        ui.label(egui::RichText::new("·").color(theme::TEXT_MUTED));
+
+        let mut folder_buf = current_folder.clone();
+        let folder_response = ui.add(
+            egui::TextEdit::singleline(&mut folder_buf)
+                .desired_width(200.0)
+                .hint_text("Folder (optional)"),
+        );
+        if folder_response.lost_focus() {
+            intents.push(PanelIntent::SetRequestFolder {
+                index: selected_index,
+                folder: folder_buf,
+                commit: true,
+            });
+        } else if folder_buf != current_folder {
+            intents.push(PanelIntent::SetRequestFolder {
+                index: selected_index,
+                folder: folder_buf,
+                commit: false,
+            });
+        }
+    });
 }
 
 fn show_tab_strip(ui: &mut egui::Ui, state: &mut AppState) {
@@ -173,7 +233,11 @@ fn tab_count_hint(state: &AppState, tab: RequestTab) -> Option<usize> {
             (n > 0).then_some(n)
         }
         RequestTab::Headers => {
-            let n = req.headers.iter().filter(|(k, _)| !k.trim().is_empty()).count();
+            let n = req
+                .headers
+                .iter()
+                .filter(|(k, _)| !k.trim().is_empty())
+                .count();
             (n > 0).then_some(n)
         }
         RequestTab::Body => req
@@ -185,30 +249,46 @@ fn tab_count_hint(state: &AppState, tab: RequestTab) -> Option<usize> {
     }
 }
 
-fn show_params_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    let Some(req) = state.selected_request_mut() else {
+fn show_params_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelIntent>) {
+    let Some(selected_index) = state.selected_request_index() else {
         return;
     };
+    let Some(req) = state.selected_request() else {
+        return;
+    };
+    let mut rows = req.query_params.clone();
+    let original = rows.clone();
     show_kv_editor(
         ui,
-        &mut req.query_params,
+        &mut rows,
         "param_name",
         "param_value",
         "No query parameters",
     );
+    if rows != original {
+        intents.push(PanelIntent::SetRequestQueryParams {
+            index: selected_index,
+            params: rows,
+        });
+    }
 }
 
-fn show_headers_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    let Some(req) = state.selected_request_mut() else {
+fn show_headers_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelIntent>) {
+    let Some(selected_index) = state.selected_request_index() else {
         return;
     };
-    show_kv_editor(
-        ui,
-        &mut req.headers,
-        "header_name",
-        "header_value",
-        "No headers",
-    );
+    let Some(req) = state.selected_request() else {
+        return;
+    };
+    let mut rows = req.headers.clone();
+    let original = rows.clone();
+    show_kv_editor(ui, &mut rows, "header_name", "header_value", "No headers");
+    if rows != original {
+        intents.push(PanelIntent::SetRequestHeaders {
+            index: selected_index,
+            headers: rows,
+        });
+    }
 }
 
 fn show_kv_editor(
@@ -257,12 +337,18 @@ fn show_kv_editor(
     }
 }
 
-fn show_auth_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    let Some(req) = state.selected_request_mut() else {
+fn show_auth_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelIntent>) {
+    let Some(selected_index) = state.selected_request_index() else {
+        return;
+    };
+    let Some(req) = state.selected_request() else {
         return;
     };
 
-    let mut auth_kind = req.auth.kind();
+    let original_auth = req.auth.clone();
+    let original_attach_oauth = req.attach_oauth;
+
+    let mut auth_kind = original_auth.kind();
     ui.horizontal(|ui| {
         ui.label(egui::RichText::new("Type").color(theme::TEXT_MUTED).small());
         egui::ComboBox::from_id_salt("request_auth_mode")
@@ -275,13 +361,15 @@ fn show_auth_tab(ui: &mut egui::Ui, state: &mut AppState) {
             });
     });
 
-    if auth_kind != req.auth.kind() {
-        req.auth = RequestAuth::from_kind(auth_kind);
-    }
+    let mut working_auth = if auth_kind != original_auth.kind() {
+        RequestAuth::from_kind(auth_kind)
+    } else {
+        original_auth.clone()
+    };
 
     ui.add_space(6.0);
 
-    match &mut req.auth {
+    match &mut working_auth {
         RequestAuth::None => {
             ui.label(
                 egui::RichText::new("No authentication")
@@ -349,10 +437,23 @@ fn show_auth_tab(ui: &mut egui::Ui, state: &mut AppState) {
         }
     }
 
-    show_oauth_hint(ui, state);
+    if working_auth != original_auth {
+        intents.push(PanelIntent::SetRequestAuth {
+            index: selected_index,
+            auth: working_auth,
+        });
+    }
+
+    show_oauth_hint(ui, state, intents, selected_index, original_attach_oauth);
 }
 
-fn show_oauth_hint(ui: &mut egui::Ui, state: &mut AppState) {
+fn show_oauth_hint(
+    ui: &mut egui::Ui,
+    state: &AppState,
+    intents: &mut Vec<PanelIntent>,
+    selected_index: usize,
+    original_attach_oauth: bool,
+) {
     ui.add_space(12.0);
     ui.separator();
     ui.add_space(4.0);
@@ -370,22 +471,20 @@ fn show_oauth_hint(ui: &mut egui::Ui, state: &mut AppState) {
             FlowKind::ClientCredentials,
             FlowKind::DeviceCode,
         ] {
-            if let Ok(Some(token)) = store.get(&env_id, flow.as_str()) {
-                if !token.is_expired(now) {
-                    return Some(token);
-                }
+            if let Ok(Some(token)) = store.get(&env_id, flow.as_str())
+                && !token.is_expired(now)
+            {
+                return Some(token);
             }
         }
         None
     });
 
-    let Some(req) = state.selected_request_mut() else {
-        return;
-    };
+    let mut attach_buf = original_attach_oauth;
 
     ui.horizontal(|ui| {
-        ui.checkbox(&mut req.attach_oauth, "Attach OAuth2 token");
-        if req.attach_oauth {
+        ui.checkbox(&mut attach_buf, "Attach OAuth2 token");
+        if attach_buf {
             if let Some(token) = &active_token {
                 let seconds = token.expires_at.saturating_sub(now);
                 let label = if seconds < 60 {
@@ -393,7 +492,11 @@ fn show_oauth_hint(ui: &mut egui::Ui, state: &mut AppState) {
                 } else if seconds < 3600 {
                     format!("(expires in {}m)", seconds / 60)
                 } else {
-                    format!("(expires in {}h {}m)", seconds / 3600, (seconds % 3600) / 60)
+                    format!(
+                        "(expires in {}h {}m)",
+                        seconds / 3600,
+                        (seconds % 3600) / 60
+                    )
                 };
                 ui.small(egui::RichText::new("●").color(egui::Color32::from_rgb(52, 168, 83)));
                 ui.small(egui::RichText::new(label).color(egui::Color32::from_rgb(52, 168, 83)));
@@ -405,14 +508,25 @@ fn show_oauth_hint(ui: &mut egui::Ui, state: &mut AppState) {
             }
         }
     });
+
+    if attach_buf != original_attach_oauth {
+        intents.push(PanelIntent::SetAttachOAuth {
+            index: selected_index,
+            attach: attach_buf,
+        });
+    }
 }
 
-fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {
-    let Some(req) = state.selected_request_mut() else {
+fn show_body_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelIntent>) {
+    let Some(selected_index) = state.selected_request_index() else {
+        return;
+    };
+    let Some(req) = state.selected_request() else {
         return;
     };
 
-    let mut body_buf = req.body.clone().unwrap_or_default();
+    let original_body = req.body.clone();
+    let mut body_buf = original_body.clone().unwrap_or_default();
     let edit = ui.add(
         egui::TextEdit::multiline(&mut body_buf)
             .font(egui::TextStyle::Monospace)
@@ -423,11 +537,17 @@ fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {
 
     if edit.changed() {
         let trimmed = body_buf.trim();
-        req.body = if trimmed.is_empty() {
+        let new_body = if trimmed.is_empty() {
             None
         } else {
             Some(body_buf.clone())
         };
+        if new_body != original_body {
+            intents.push(PanelIntent::SetRequestBody {
+                index: selected_index,
+                body: new_body,
+            });
+        }
     }
 
     let hint = if body_buf.trim_start().starts_with('{') || body_buf.trim_start().starts_with('[') {
@@ -440,9 +560,13 @@ fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {
 
     ui.horizontal(|ui| {
         ui.label(
-            egui::RichText::new(format!("{} bytes · {} lines", body_buf.len(), body_buf.lines().count()))
-                .color(theme::TEXT_MUTED)
-                .small(),
+            egui::RichText::new(format!(
+                "{} bytes · {} lines",
+                body_buf.len(),
+                body_buf.lines().count()
+            ))
+            .color(theme::TEXT_MUTED)
+            .small(),
         );
         if let Some(h) = hint {
             ui.label(
@@ -453,7 +577,4 @@ fn show_body_tab(ui: &mut egui::Ui, state: &mut AppState) {
             );
         }
     });
-
-    // Keep unused import happy (RequestDraft used via mut ref).
-    let _: &RequestDraft = &*req;
 }

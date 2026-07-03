@@ -45,9 +45,7 @@ pub fn show_topbar(ui: &mut egui::Ui, state: &mut AppState, _active_view: View) 
                                 url.truncate(57);
                                 url.push_str("…");
                             }
-                            ui.label(
-                                egui::RichText::new(url).monospace().color(theme::TEXT),
-                            );
+                            ui.label(egui::RichText::new(url).monospace().color(theme::TEXT));
                             ui.add_space(8.0);
                             ui.label(theme::method_badge(&req.method));
                         }

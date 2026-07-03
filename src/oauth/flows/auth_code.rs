@@ -36,7 +36,11 @@ pub async fn run(config: &AuthCodeConfig) -> Result<Token, OAuthError> {
     for scope in &config.scopes {
         auth_request = auth_request.add_scope(Scope::new(scope.clone()));
     }
-    for (k, v) in collect_extra_params(config.audience.as_deref(), config.resource.as_deref(), &config.extra_auth_params) {
+    for (k, v) in collect_extra_params(
+        config.audience.as_deref(),
+        config.resource.as_deref(),
+        &config.extra_auth_params,
+    ) {
         auth_request = auth_request.add_extra_param(k, v);
     }
 
@@ -71,7 +75,12 @@ pub async fn run(config: &AuthCodeConfig) -> Result<Token, OAuthError> {
         .await
         .map_err(|e| OAuthError::Http(format!("token exchange failed: {e}")))?;
 
-    Ok(build_cached_token(&token_response, FlowKind::AuthCodePkce, &config.scopes, None))
+    Ok(build_cached_token(
+        &token_response,
+        FlowKind::AuthCodePkce,
+        &config.scopes,
+        None,
+    ))
 }
 
 fn build_client(config: &AuthCodeConfig, redirect_uri: &str) -> Result<BasicClient, OAuthError> {
@@ -93,7 +102,6 @@ fn build_client(config: &AuthCodeConfig, redirect_uri: &str) -> Result<BasicClie
     )
     .set_redirect_uri(redirect))
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -134,11 +142,12 @@ mod tests {
             .add_scope(Scope::new("openid".into()))
             .url();
 
-        let query: std::collections::HashMap<String, String> = url
-            .query_pairs()
-            .into_owned()
-            .collect();
-        assert_eq!(query.get("client_id").map(String::as_str), Some("client-123"));
+        let query: std::collections::HashMap<String, String> =
+            url.query_pairs().into_owned().collect();
+        assert_eq!(
+            query.get("client_id").map(String::as_str),
+            Some("client-123")
+        );
         assert_eq!(query.get("response_type").map(String::as_str), Some("code"));
         assert_eq!(
             query.get("code_challenge_method").map(String::as_str),

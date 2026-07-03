@@ -1,11 +1,20 @@
+// Guard against accidentally committing `dbg!(...)`, which prints via the
+// `Debug` impl and would bypass the secret-redaction work by dumping
+// token/password-bearing structs to stderr.
+#![warn(clippy::dbg_macro)]
+
 mod app;
+mod curl_format;
 mod http_format;
 mod oauth;
 mod openapi;
+mod openapi_import;
 mod persistence;
+mod request_prep;
 mod runtime;
 mod state;
 mod ui;
+mod workspace;
 
 use std::error::Error;
 
@@ -25,7 +34,7 @@ fn run() -> Result<(), Box<dyn Error>> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Probe")
-            .with_inner_size([960.0, 640.0])
+            .with_inner_size([1200.0, 800.0])
             .with_min_inner_size([720.0, 480.0]),
         ..Default::default()
     };

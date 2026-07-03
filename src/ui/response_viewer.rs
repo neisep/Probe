@@ -174,7 +174,9 @@ fn show_tabs(ui: &mut egui::Ui, viewer: &mut ResponseViewerState) {
 fn tab_button(ui: &mut egui::Ui, viewer: &mut ResponseViewerState, tab: BodyTab, label: &str) {
     let selected = viewer.tab == tab;
     let text = if selected {
-        egui::RichText::new(label).color(theme::ACCENT_STRONG).strong()
+        egui::RichText::new(label)
+            .color(theme::ACCENT_STRONG)
+            .strong()
     } else {
         egui::RichText::new(label).color(theme::TEXT_MUTED)
     };
@@ -184,9 +186,16 @@ fn tab_button(ui: &mut egui::Ui, viewer: &mut ResponseViewerState, tab: BodyTab,
 }
 
 fn show_body(ui: &mut egui::Ui, response: &ResponseSummary, viewer: &mut ResponseViewerState) {
-    let Some(raw_body) = response.body_text.as_deref().or(response.preview_text.as_deref())
+    let Some(raw_body) = response
+        .body_text
+        .as_deref()
+        .or(response.preview_text.as_deref())
     else {
-        ui.label(egui::RichText::new("No body").color(theme::TEXT_MUTED).italics());
+        ui.label(
+            egui::RichText::new("No body")
+                .color(theme::TEXT_MUTED)
+                .italics(),
+        );
         return;
     };
 
@@ -264,7 +273,11 @@ fn show_headers_panel(ui: &mut egui::Ui, response: &ResponseSummary) {
         .inner_margin(egui::Margin::same(10))
         .show(ui, |ui| {
             if response.response_headers.is_empty() {
-                ui.label(egui::RichText::new("No headers").color(theme::TEXT_MUTED).italics());
+                ui.label(
+                    egui::RichText::new("No headers")
+                        .color(theme::TEXT_MUTED)
+                        .italics(),
+                );
                 return;
             }
             egui::ScrollArea::vertical()
@@ -304,7 +317,11 @@ fn show_raw(ui: &mut egui::Ui, response: &ResponseSummary) {
         raw.push_str(&format!("{key}: {value}\n"));
     }
     raw.push('\n');
-    if let Some(body) = response.body_text.as_deref().or(response.preview_text.as_deref()) {
+    if let Some(body) = response
+        .body_text
+        .as_deref()
+        .or(response.preview_text.as_deref())
+    {
         raw.push_str(body);
     }
 
@@ -359,6 +376,8 @@ fn show_error_body(ui: &mut egui::Ui, response: &ResponseSummary) {
 fn show_empty(ui: &mut egui::Ui) {
     ui.vertical_centered(|ui| {
         ui.add_space(60.0);
-        ui.label(egui::RichText::new("Send a request to see the response").color(theme::TEXT_MUTED));
+        ui.label(
+            egui::RichText::new("Send a request to see the response").color(theme::TEXT_MUTED),
+        );
     });
 }

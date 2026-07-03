@@ -7,7 +7,7 @@ pub type RequestId = u64;
 pub type RequestHeaders = Vec<(String, String)>;
 pub type ResolutionValues = BTreeMap<String, String>;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct AsyncRequest {
     pub url: String,
     /// "GET", "POST", etc. Keep simple for now.
@@ -16,6 +16,77 @@ pub struct AsyncRequest {
     pub headers: RequestHeaders,
     /// Optional body bytes for methods that support a payload.
     pub body: Option<Vec<u8>>,
+}
+
+/// Header names whose values are redacted in `Debug` output. Case
+/// insensitive. Anything matching one of these is replaced with
+/// `"<redacted>"` so that resolved OAuth bearers, API keys, cookies, and
+/// proxy credentials don't leak into log lines, panic backtraces, or
+/// `tracing::debug!(?req)` spans.
+const SENSITIVE_HEADER_NAMES: &[&str] = &[
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "x-api-key",
+    "x-auth-token",
+];
+
+pub(crate) fn redact_header_value<'a>(name: &str, value: &'a str) -> &'a str {
+    if is_sensitive_header(name) {
+        "<redacted>"
+    } else {
+        value
+    }
+}
+
+/// Whether the named header carries credential material that should be
+/// redacted from logs and on-disk history. Case-insensitive.
+pub fn is_sensitive_header(name: &str) -> bool {
+    SENSITIVE_HEADER_NAMES
+        .iter()
+        .any(|sensitive| name.eq_ignore_ascii_case(sensitive))
+}
+
+/// Return a copy of `headers` with values for credential-bearing names
+/// replaced by `"<redacted>"`. Used at the boundary into response
+/// history so request headers persisted to disk never include the live
+/// bearer / API-key / cookie material.
+pub fn redact_sensitive_headers(headers: &[(String, String)]) -> Vec<(String, String)> {
+    headers
+        .iter()
+        .map(|(name, value)| {
+            if is_sensitive_header(name) {
+                (name.clone(), "<redacted>".to_owned())
+            } else {
+                (name.clone(), value.clone())
+            }
+        })
+        .collect()
+}
+
+impl fmt::Debug for AsyncRequest {
+    /// Custom Debug that redacts the values of well-known
+    /// credential-bearing headers. The body is summarised by its length
+    /// rather than dumped, since request bodies routinely contain auth
+    /// material (form-posted client_secret, etc.) that no log line should
+    /// echo.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let redacted_headers: Vec<(&str, &str)> = self
+            .headers
+            .iter()
+            .map(|(name, value)| (name.as_str(), redact_header_value(name, value)))
+            .collect();
+        f.debug_struct("AsyncRequest")
+            .field("method", &self.method)
+            .field("url", &self.url)
+            .field("headers", &redacted_headers)
+            .field(
+                "body",
+                &self.body.as_ref().map(|b| format!("<{} bytes>", b.len())),
+            )
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -61,6 +132,8 @@ pub struct ResponseInfo {
     pub content_type: Option<String>,
     /// Duration of the request round-trip in milliseconds
     pub duration_ms: u128,
+    /// True if the body was capped at the runtime limit and additional bytes were discarded.
+    pub truncated: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -197,6 +270,21 @@ impl ErrorInfo {
             code,
             details,
             kind,
+        }
+    }
+
+    pub fn format_display(&self) -> String {
+        match (&self.kind, &self.code, &self.details) {
+            (Some(kind), Some(code), Some(details)) => {
+                format!("{} [{kind}] ({code}): {details}", self.message)
+            }
+            (Some(kind), Some(code), None) => format!("{} [{kind}] ({code})", self.message),
+            (Some(kind), None, Some(details)) => format!("{} [{kind}]: {details}", self.message),
+            (Some(kind), None, None) => format!("{} [{kind}]", self.message),
+            (None, Some(code), Some(details)) => format!("{} ({code}): {details}", self.message),
+            (None, Some(code), None) => format!("{} ({code})", self.message),
+            (None, None, Some(details)) => format!("{}: {details}", self.message),
+            (None, None, None) => self.message.clone(),
         }
     }
 }
@@ -361,4 +449,78 @@ pub fn resolve_body_text(
         std::str::from_utf8(body).map_err(|e| ResolutionError::non_text_body(e.to_string()))?;
     let resolved = resolve_text_with_behavior("body", text, values, behavior)?;
     Ok(Some(resolved.into_bytes()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn is_sensitive_header_is_case_insensitive() {
+        assert!(is_sensitive_header("Authorization"));
+        assert!(is_sensitive_header("authorization"));
+        assert!(is_sensitive_header("AUTHORIZATION"));
+        assert!(is_sensitive_header("Cookie"));
+        assert!(is_sensitive_header("X-API-Key"));
+        assert!(is_sensitive_header("set-cookie"));
+        assert!(!is_sensitive_header("Content-Type"));
+        assert!(!is_sensitive_header("Accept"));
+    }
+
+    #[test]
+    fn redact_sensitive_headers_redacts_only_credential_headers() {
+        let headers = vec![
+            ("Content-Type".to_owned(), "application/json".to_owned()),
+            ("Authorization".to_owned(), "Bearer LIVE_TOKEN".to_owned()),
+            ("X-API-Key".to_owned(), "ak_LIVE".to_owned()),
+            ("Accept".to_owned(), "*/*".to_owned()),
+        ];
+        let out = redact_sensitive_headers(&headers);
+        assert_eq!(out[0], ("Content-Type".into(), "application/json".into()));
+        assert_eq!(out[1], ("Authorization".into(), "<redacted>".into()));
+        assert_eq!(out[2], ("X-API-Key".into(), "<redacted>".into()));
+        assert_eq!(out[3], ("Accept".into(), "*/*".into()));
+    }
+
+    #[test]
+    fn async_request_debug_redacts_authorization_header() {
+        let req = AsyncRequest {
+            url: "https://api.example.com/me".into(),
+            method: "GET".into(),
+            headers: vec![
+                ("Accept".to_owned(), "application/json".to_owned()),
+                (
+                    "Authorization".to_owned(),
+                    "Bearer LIVE_TOKEN_XYZ".to_owned(),
+                ),
+            ],
+            body: None,
+        };
+        let rendered = format!("{req:?}");
+        assert!(
+            !rendered.contains("LIVE_TOKEN_XYZ"),
+            "Authorization header value leaked: {rendered}"
+        );
+        assert!(rendered.contains("<redacted>"));
+        // Non-sensitive headers and other fields stay visible.
+        assert!(rendered.contains("Accept"));
+        assert!(rendered.contains("application/json"));
+        assert!(rendered.contains("api.example.com"));
+    }
+
+    #[test]
+    fn async_request_debug_summarises_body_by_length() {
+        let req = AsyncRequest {
+            url: "https://api.example.com/login".into(),
+            method: "POST".into(),
+            headers: vec![],
+            body: Some(b"{\"username\":\"alice\",\"password\":\"hunter2\"}".to_vec()),
+        };
+        let rendered = format!("{req:?}");
+        assert!(
+            !rendered.contains("hunter2"),
+            "request body content leaked into Debug: {rendered}"
+        );
+        assert!(rendered.contains("bytes>"));
+    }
 }

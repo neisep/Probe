@@ -1,4 +1,5 @@
 use crate::state::{AppState, View};
+use crate::ui::intent::PanelIntent;
 use crate::ui::response_viewer::{self, ResponseViewerState};
 use crate::ui::{request_panel, response_panel, theme};
 use eframe::egui;
@@ -7,6 +8,7 @@ pub fn show_center(
     ui: &mut egui::Ui,
     state: &mut AppState,
     viewer: &mut ResponseViewerState,
+    intents: &mut Vec<PanelIntent>,
     pending: bool,
 ) {
     egui::CentralPanel::default()
@@ -30,7 +32,7 @@ pub fn show_center(
                         .id_salt("request_editor_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            request_panel::show_request_editor(ui, state);
+                            request_panel::show_request_editor(ui, state, intents);
                         });
                 });
 

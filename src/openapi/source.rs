@@ -30,9 +30,8 @@ pub fn fetch_url(url: &str) -> mpsc::Receiver<Result<String, OpenApiError>> {
                                 if scheme == "http" || scheme == "https" {
                                     attempt.follow()
                                 } else {
-                                    attempt.error(format!(
-                                        "redirect to disallowed scheme '{scheme}'"
-                                    ))
+                                    attempt
+                                        .error(format!("redirect to disallowed scheme '{scheme}'"))
                                 }
                             }))
                             .build()
@@ -43,10 +42,7 @@ pub fn fetch_url(url: &str) -> mpsc::Receiver<Result<String, OpenApiError>> {
                             .await
                             .map_err(|e| OpenApiError::Http(e.to_string()))?;
                         if !response.status().is_success() {
-                            return Err(OpenApiError::Http(format!(
-                                "HTTP {}",
-                                response.status()
-                            )));
+                            return Err(OpenApiError::Http(format!("HTTP {}", response.status())));
                         }
                         response
                             .text()

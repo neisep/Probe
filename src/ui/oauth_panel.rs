@@ -1,5 +1,4 @@
 use std::sync::mpsc;
-use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -11,7 +10,6 @@ use crate::oauth::flows::client_credentials::{self, ClientCredentialsConfig};
 use crate::oauth::flows::device_code::{self, DeviceCodeConfig, DeviceCodeEvent};
 use crate::oauth::middleware;
 use crate::oauth::{FlowKind, OAuthConfig, Token, TokenStore, now_unix, storage, token_store};
-use crate::state::AppState;
 
 #[derive(Debug, Clone)]
 enum FlowEvent {
@@ -31,7 +29,9 @@ struct DeviceVerification {
     verification_uri_complete: Option<String>,
 }
 
-struct OAuthPanelState {
+/// Transient state for the OAuth settings panel. Held on `PanelUiState`
+/// (owned by `ProbeApp`) and passed in by reference each frame.
+pub struct OAuthPanelState {
     loaded_env: Option<String>,
     env_id: String,
     config: OAuthConfig,
@@ -67,34 +67,23 @@ fn flow_index(flow: FlowKind) -> usize {
     }
 }
 
-static PANEL_STATE: OnceLock<Mutex<OAuthPanelState>> = OnceLock::new();
-
-fn panel_state() -> &'static Mutex<OAuthPanelState> {
-    PANEL_STATE.get_or_init(|| Mutex::new(OAuthPanelState::default()))
-}
-
-pub fn show(ui: &mut egui::Ui, state: &AppState) {
-    let env_name = match state.active_environment_name() {
-        Some(name) => name.to_owned(),
-        None => {
-            ui.small("Select an environment to configure OAuth2.");
-            return;
-        }
+pub fn show(ui: &mut egui::Ui, panel: &mut OAuthPanelState, env_name: Option<&str>) {
+    let Some(env_name) = env_name else {
+        ui.small("Select an environment to configure OAuth2.");
+        return;
     };
-    let env_id = slugify_env_id(&env_name);
+    let env_id = slugify_env_id(env_name);
 
-    let mut panel = panel_state().lock().unwrap_or_else(|e| e.into_inner());
+    sync_if_env_changed(panel, env_name, &env_id);
+    poll_flow_events(panel);
 
-    sync_if_env_changed(&mut panel, &env_name, &env_id);
-    poll_flow_events(&mut panel);
-
-    render_flow_selector(ui, &mut panel);
+    render_flow_selector(ui, panel);
     ui.add_space(4.0);
 
     match panel.config.active_flow {
-        Some(FlowKind::AuthCodePkce) => render_auth_code_section(ui, &mut panel),
-        Some(FlowKind::ClientCredentials) => render_client_credentials_section(ui, &mut panel),
-        Some(FlowKind::DeviceCode) => render_device_code_section(ui, &mut panel),
+        Some(FlowKind::AuthCodePkce) => render_auth_code_section(ui, panel),
+        Some(FlowKind::ClientCredentials) => render_client_credentials_section(ui, panel),
+        Some(FlowKind::DeviceCode) => render_device_code_section(ui, panel),
         None => {
             ui.small("Pick a flow to configure credentials.");
         }
@@ -102,7 +91,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
 
     if panel.config.active_flow.is_some() {
         ui.add_space(4.0);
-        render_injection_section(ui, &mut panel);
+        render_injection_section(ui, panel);
     }
 
     if let Some(message) = panel.status_message.clone() {
@@ -110,7 +99,7 @@ pub fn show(ui: &mut egui::Ui, state: &AppState) {
         ui.small(message);
     }
 
-    persist_if_changed(&mut panel);
+    persist_if_changed(panel);
 }
 
 fn sync_if_env_changed(panel: &mut OAuthPanelState, env_name: &str, env_id: &str) {
@@ -128,9 +117,18 @@ fn sync_if_env_changed(panel: &mut OAuthPanelState, env_name: &str, env_id: &str
     panel.in_flight = None;
     panel.device_verification = None;
     panel.cached_tokens = [
-        token_store().get(env_id, FlowKind::AuthCodePkce.as_str()).ok().flatten(),
-        token_store().get(env_id, FlowKind::ClientCredentials.as_str()).ok().flatten(),
-        token_store().get(env_id, FlowKind::DeviceCode.as_str()).ok().flatten(),
+        token_store()
+            .get(env_id, FlowKind::AuthCodePkce.as_str())
+            .ok()
+            .flatten(),
+        token_store()
+            .get(env_id, FlowKind::ClientCredentials.as_str())
+            .ok()
+            .flatten(),
+        token_store()
+            .get(env_id, FlowKind::DeviceCode.as_str())
+            .ok()
+            .flatten(),
     ];
 }
 
@@ -172,8 +170,7 @@ fn poll_flow_events(panel: &mut OAuthPanelState) {
                 Err(mpsc::TryRecvError::Empty) => return,
                 Err(mpsc::TryRecvError::Disconnected) => {
                     if panel.status_message.is_none() {
-                        panel.status_message =
-                            Some("Flow worker exited without result.".into());
+                        panel.status_message = Some("Flow worker exited without result.".into());
                     }
                     panel.in_flight = None;
                     panel.device_verification = None;
@@ -192,8 +189,7 @@ fn poll_flow_events(panel: &mut OAuthPanelState) {
                     verification_uri,
                     verification_uri_complete,
                 });
-                panel.status_message =
-                    Some("Enter the code at the verification URL.".into());
+                panel.status_message = Some("Enter the code at the verification URL.".into());
             }
             FlowEvent::Completed(token) => {
                 let scopes_len = token.scopes.len();
@@ -291,8 +287,7 @@ fn render_auth_code_section(ui: &mut egui::Ui, panel: &mut OAuthPanelState) {
         && !snapshot.token_url.trim().is_empty()
         && !snapshot.client_id.trim().is_empty();
 
-    let (get_clicked, reset_clicked) =
-        render_action_row(ui, panel, FlowKind::AuthCodePkce, ready);
+    let (get_clicked, reset_clicked) = render_action_row(ui, panel, FlowKind::AuthCodePkce, ready);
     if get_clicked {
         let config = AuthCodeConfig {
             auth_url: snapshot.auth_url.trim().to_owned(),
@@ -472,7 +467,10 @@ fn render_device_verification(ui: &mut egui::Ui, verification: &DeviceVerificati
                 }
             });
             if let Some(complete) = verification.verification_uri_complete.as_deref() {
-                if ui.small_button("Open pre-filled verification URL").clicked() {
+                if ui
+                    .small_button("Open pre-filled verification URL")
+                    .clicked()
+                {
                     if let Err(e) = open_url(complete) {
                         tracing::warn!("failed to open pre-filled verification URL: {e}");
                     }
@@ -499,13 +497,20 @@ fn render_action_row(
     ui.add_space(6.0);
     render_token_pill(ui, stored, in_flight);
 
-    let get_label = if in_flight { "Getting token…" } else { "Get token" };
+    let get_label = if in_flight {
+        "Getting token…"
+    } else {
+        "Get token"
+    };
     ui.horizontal(|ui| {
         let get = ui
             .add_enabled(!in_flight && ready, egui::Button::new(get_label))
             .clicked();
         let reset = ui
-            .add_enabled(stored.is_some() && !in_flight, egui::Button::new("Reset token"))
+            .add_enabled(
+                stored.is_some() && !in_flight,
+                egui::Button::new("Reset token"),
+            )
             .clicked();
         (get, reset)
     })

@@ -48,11 +48,10 @@ pub(crate) fn collect_extra_params(
     params
 }
 
-
-use oauth2::basic::BasicTokenType;
 use oauth2::TokenResponse;
+use oauth2::basic::BasicTokenType;
 
-use crate::oauth::{now_unix, FlowKind, Token};
+use crate::oauth::{FlowKind, Token, now_unix};
 
 const DEFAULT_TOKEN_LIFETIME_SECONDS: i64 = 3600;
 
