@@ -4,6 +4,7 @@ use crate::oauth::config::slugify_env_id;
 use crate::oauth::{FlowKind, TokenStore, token_store};
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
 use crate::state::{AppState, RequestTab};
+use crate::ui::command::UiCommand;
 use crate::ui::intent::PanelIntent;
 use crate::ui::theme;
 use eframe::egui;
@@ -12,10 +13,19 @@ pub fn show_request_editor(
     ui: &mut egui::Ui,
     state: &mut AppState,
     intents: &mut Vec<PanelIntent>,
+    commands: &mut Vec<UiCommand>,
+    dirty: bool,
 ) {
     let mut queue_preview_for_selected = false;
 
-    show_header_row(ui, state, intents, &mut queue_preview_for_selected);
+    show_header_row(
+        ui,
+        state,
+        intents,
+        commands,
+        dirty,
+        &mut queue_preview_for_selected,
+    );
     ui.add_space(8.0);
 
     if state.selected_request_index().is_none() {
@@ -45,15 +55,43 @@ pub fn show_request_editor(
     }
 }
 
+/// `💾 Save` sits next to `Send` because that is where the request being
+/// saved is edited. The dot marks unsaved changes; the underlying save is a
+/// whole-workspace persist, so the hover text says so rather than implying
+/// only this request is written.
+fn show_save_button(ui: &mut egui::Ui, commands: &mut Vec<UiCommand>, dirty: bool) {
+    // `•` rather than `●`: the filled-circle glyph is missing from
+    // egui's bundled fonts and renders as a tofu box.
+    let label = if dirty { "💾 Save •" } else { "💾 Save" };
+    let mut button = egui::Button::new(egui::RichText::new(label).color(theme::TEXT_STRONG));
+    if dirty {
+        button = button.fill(theme::ACCENT.gamma_multiply(0.30));
+    }
+    let hover = if dirty {
+        "Unsaved changes — save all changes to disk (Ctrl+S)"
+    } else {
+        "Save all changes to disk (Ctrl+S)"
+    };
+    if ui.add(button).on_hover_text(hover).clicked() {
+        commands.push(UiCommand::SaveWorkspace);
+    }
+}
+
 fn show_header_row(
     ui: &mut egui::Ui,
     state: &AppState,
     intents: &mut Vec<PanelIntent>,
+    commands: &mut Vec<UiCommand>,
+    dirty: bool,
     queue_preview: &mut bool,
 ) {
     let Some(selected_index) = state.selected_request_index() else {
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Send"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled(false, egui::Button::new("Send"));
+                ui.add_space(6.0);
+                show_save_button(ui, commands, dirty);
+            });
         });
         return;
     };
@@ -103,6 +141,8 @@ fn show_header_row(
             }
 
             ui.add_space(6.0);
+            show_save_button(ui, commands, dirty);
+            ui.add_space(6.0);
 
             let current_url = state
                 .selected_request()
@@ -113,7 +153,7 @@ fn show_header_row(
                 egui::TextEdit::singleline(&mut url_buf)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(ui.available_width())
-                    .hint_text("https://example.com/path"),
+                    .hint_text("https://example.com/path — or paste a curl command"),
             );
             if crate::curl_format::looks_like_curl(&url_buf)
                 && (url_response.lost_focus() || url_buf != current_url)

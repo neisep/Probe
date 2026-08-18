@@ -1,8 +1,10 @@
+pub mod multi;
 pub mod parser;
 pub mod writer;
 
 use std::fmt;
 
+pub use multi::parse_requests;
 pub use parser::parse_request;
 pub use writer::write_request;
 

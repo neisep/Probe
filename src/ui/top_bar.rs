@@ -1,9 +1,16 @@
-use crate::state::{AppState, View};
+use crate::state::AppState;
+use crate::ui::command::UiCommand;
+use crate::ui::import_menu::{self, ImportMenuBusy};
 use crate::ui::left_sidebar::environment_editor;
 use crate::ui::theme;
 use eframe::egui;
 
-pub fn show_topbar(ui: &mut egui::Ui, state: &mut AppState, _active_view: View) {
+pub fn show_topbar(
+    ui: &mut egui::Ui,
+    state: &mut AppState,
+    busy: ImportMenuBusy,
+    commands: &mut Vec<UiCommand>,
+) {
     egui::Panel::top("top_bar").show_inside(ui, |ui| {
         ui.set_min_height(40.0);
         ui.set_max_height(40.0);
@@ -37,18 +44,12 @@ pub fn show_topbar(ui: &mut egui::Ui, state: &mut AppState, _active_view: View) 
                             state.ui.settings_open = !state.ui.settings_open;
                         }
 
-                        ui.add_space(14.0);
+                        ui.add_space(10.0);
 
-                        if let Some(req) = state.selected_request() {
-                            let mut url = req.url.clone();
-                            if url.len() > 60 {
-                                url.truncate(57);
-                                url.push_str("…");
-                            }
-                            ui.label(egui::RichText::new(url).monospace().color(theme::TEXT));
-                            ui.add_space(8.0);
-                            ui.label(theme::method_badge(&req.method));
-                        }
+                        // Every import source lives behind this one menu; the
+                        // method/URL echo that used to sit here duplicated the
+                        // request editor rendered directly below.
+                        import_menu::show(ui, busy, commands);
                     });
                 });
             });

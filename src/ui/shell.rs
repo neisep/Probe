@@ -1,6 +1,8 @@
 use eframe::egui;
 
 use crate::state::AppState;
+use crate::ui::command::UiCommand;
+use crate::ui::import_menu::ImportMenuBusy;
 use crate::ui::intent::PanelIntent;
 use crate::ui::left_sidebar::environment_editor;
 use crate::ui::panel_state::PanelUiState;
@@ -8,21 +10,29 @@ use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::theme;
 use crate::ui::{center_panel, left_sidebar, top_bar};
 
-pub fn show(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    viewer: &mut ResponseViewerState,
-    panels: &mut PanelUiState,
-    intents: &mut Vec<PanelIntent>,
-    pending: bool,
-) {
-    let active_view = state.ui.view;
+/// Everything the shell needs from `app.rs` beyond `AppState`: the buffers
+/// panels write into, and the flags that gate the import menu and the Save
+/// button. Grouped so panels keep taking a single context instead of a
+/// growing parameter list.
+pub struct ShellContext<'a> {
+    pub viewer: &'a mut ResponseViewerState,
+    pub panels: &'a mut PanelUiState,
+    pub intents: &'a mut Vec<PanelIntent>,
+    pub commands: &'a mut Vec<UiCommand>,
+    /// A request is in flight.
+    pub pending: bool,
+    /// Import sources that are temporarily unavailable.
+    pub busy: ImportMenuBusy,
+    /// There are unsaved changes on disk-bound state.
+    pub dirty: bool,
+}
 
-    top_bar::show_topbar(ui, state, active_view);
-    left_sidebar::show_sidebar(ui, state, intents);
-    center_panel::show_center(ui, state, viewer, intents, pending);
+pub fn show(ui: &mut egui::Ui, state: &mut AppState, ctx: &mut ShellContext<'_>) {
+    top_bar::show_topbar(ui, state, ctx.busy, ctx.commands);
+    left_sidebar::show_sidebar(ui, state, ctx.intents);
+    center_panel::show_center(ui, state, ctx);
 
-    show_settings_window(ui.ctx(), state, panels, intents);
+    show_settings_window(ui.ctx(), state, ctx.panels, ctx.intents);
 }
 
 fn show_settings_window(
