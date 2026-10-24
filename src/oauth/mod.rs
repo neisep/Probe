@@ -1,8 +1,10 @@
 pub mod browser;
 pub mod config;
 pub mod flows;
+pub mod jwt_exp;
 pub mod middleware;
 pub mod pkce;
+pub mod reacquire;
 pub mod store;
 
 use std::sync::OnceLock;
@@ -13,7 +15,11 @@ use serde::{Deserialize, Serialize};
 pub use config::OAuthConfig;
 #[cfg(feature = "keyring-storage")]
 pub use store::KeyringTokenStore;
-pub use store::{FileTokenStore, TokenStore};
+pub use store::TokenStore;
+// Named directly only by the file-store build and its tests; under
+// `keyring-storage` the keychain store takes its place.
+#[cfg_attr(feature = "keyring-storage", allow(unused_imports))]
+pub use store::FileTokenStore;
 
 use crate::persistence::FileStorage;
 
@@ -34,15 +40,40 @@ pub(crate) fn storage() -> Option<&'static FileStorage> {
         .as_ref()
 }
 
+/// The token store this build uses, rooted at the default data directory.
+///
+/// Everything that reads or writes OAuth tokens must go through this (or
+/// [`token_store_at`]) rather than naming a concrete store. Picking
+/// `FileTokenStore` directly is how the panel and the send path ended up
+/// disagreeing under `--features keyring-storage`: tokens were written to the
+/// OS keychain and then looked for on disk, so requests went out unauthorized.
+pub(crate) fn token_store() -> TokenStoreImpl {
+    token_store_at(DATA_DIR)
+}
+
+/// Same choice as [`token_store`], but rooted at `base_dir`.
+///
+/// `base_dir` only means something for the file store; the keychain is a
+/// process-wide OS facility with no directory of its own, so the argument is
+/// ignored there. The middleware is parameterised by base dir for its tests,
+/// which is why this variant exists.
 #[cfg(not(feature = "keyring-storage"))]
-pub(crate) fn token_store() -> FileTokenStore {
-    FileTokenStore::new(DATA_DIR)
+pub(crate) fn token_store_at(base_dir: &str) -> TokenStoreImpl {
+    FileTokenStore::new(base_dir)
 }
 
 #[cfg(feature = "keyring-storage")]
-pub(crate) fn token_store() -> KeyringTokenStore {
+pub(crate) fn token_store_at(_base_dir: &str) -> TokenStoreImpl {
     KeyringTokenStore
 }
+
+/// The concrete store `token_store`/`token_store_at` hand back, so call sites
+/// can name the type without caring which build they are in.
+#[cfg(not(feature = "keyring-storage"))]
+pub(crate) type TokenStoreImpl = FileTokenStore;
+
+#[cfg(feature = "keyring-storage")]
+pub(crate) type TokenStoreImpl = KeyringTokenStore;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

@@ -51,8 +51,10 @@ pub(crate) fn collect_extra_params(
 use oauth2::TokenResponse;
 use oauth2::basic::BasicTokenType;
 
-use crate::oauth::{FlowKind, Token, now_unix};
+use crate::oauth::{FlowKind, Token, jwt_exp, now_unix};
 
+/// Last-resort lifetime, used only when the token endpoint omits `expires_in`
+/// *and* the access token carries no readable `exp` claim.
 const DEFAULT_TOKEN_LIFETIME_SECONDS: i64 = 3600;
 
 pub(crate) fn build_cached_token<R: TokenResponse<BasicTokenType>>(
@@ -62,9 +64,16 @@ pub(crate) fn build_cached_token<R: TokenResponse<BasicTokenType>>(
     fallback_refresh_token: Option<&str>,
 ) -> Token {
     let now = now_unix();
+    // Expiry, most authoritative source first: what the token endpoint said,
+    // then the token's own `exp` claim if it is a JWT, then a guess. Reading
+    // `exp` keeps Probe from renewing hourly against a token that is actually
+    // valid for a day — and from attaching a dead one that only lived five
+    // minutes.
+    let access_token = response.access_token().secret().clone();
     let expires_at = response
         .expires_in()
         .map(|d| now.saturating_add(d.as_secs() as i64))
+        .or_else(|| jwt_exp::exp_claim(&access_token))
         .unwrap_or_else(|| now.saturating_add(DEFAULT_TOKEN_LIFETIME_SECONDS));
     let scopes = response
         .scopes()
@@ -77,10 +86,100 @@ pub(crate) fn build_cached_token<R: TokenResponse<BasicTokenType>>(
 
     Token {
         flow,
-        access_token: response.access_token().secret().clone(),
+        access_token,
         refresh_token,
         expires_at,
         obtained_at: now,
         scopes,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use oauth2::basic::BasicTokenResponse;
+    use oauth2::{AccessToken, EmptyExtraTokenFields};
+    use std::time::Duration;
+
+    /// A JWT-shaped access token whose payload claims `exp`.
+    fn jwt_with_exp(exp: i64) -> String {
+        format!(
+            "{}.{}.sig",
+            URL_SAFE_NO_PAD.encode(br#"{"alg":"none"}"#),
+            URL_SAFE_NO_PAD.encode(format!(r#"{{"exp":{exp}}}"#).as_bytes())
+        )
+    }
+
+    fn response(access_token: &str, expires_in: Option<u64>) -> BasicTokenResponse {
+        let mut response = BasicTokenResponse::new(
+            AccessToken::new(access_token.to_owned()),
+            BasicTokenType::Bearer,
+            EmptyExtraTokenFields {},
+        );
+        response.set_expires_in(expires_in.map(Duration::from_secs).as_ref());
+        response
+    }
+
+    #[test]
+    fn expires_in_from_the_endpoint_wins() {
+        let now = now_unix();
+        // The endpoint says 300 s; the JWT claims a year. Trust the endpoint.
+        let token = build_cached_token(
+            &response(&jwt_with_exp(now + 31_536_000), Some(300)),
+            FlowKind::ClientCredentials,
+            &[],
+            None,
+        );
+        assert!((token.expires_at - (now + 300)).abs() <= 1);
+    }
+
+    #[test]
+    fn falls_back_to_the_jwt_exp_claim() {
+        let now = now_unix();
+        let exp = now + 86_400;
+        let token = build_cached_token(
+            &response(&jwt_with_exp(exp), None),
+            FlowKind::ClientCredentials,
+            &[],
+            None,
+        );
+        // A day-long token must not be treated as a one-hour one.
+        assert_eq!(token.expires_at, exp);
+    }
+
+    #[test]
+    fn falls_back_to_the_default_for_an_opaque_token() {
+        let now = now_unix();
+        let token = build_cached_token(
+            &response("2YotnFZFEjr1zCsicMWpAA", None),
+            FlowKind::ClientCredentials,
+            &[],
+            None,
+        );
+        assert!((token.expires_at - (now + DEFAULT_TOKEN_LIFETIME_SECONDS)).abs() <= 1);
+    }
+
+    #[test]
+    fn fallback_refresh_token_is_kept_when_the_response_omits_one() {
+        let token = build_cached_token(
+            &response("atk", Some(60)),
+            FlowKind::AuthCodePkce,
+            &[],
+            Some("previous-rtk"),
+        );
+        assert_eq!(token.refresh_token.as_deref(), Some("previous-rtk"));
+    }
+
+    #[test]
+    fn fallback_scopes_are_used_when_the_response_omits_them() {
+        let token = build_cached_token(
+            &response("atk", Some(60)),
+            FlowKind::ClientCredentials,
+            &["read".to_owned(), "write".to_owned()],
+            None,
+        );
+        assert_eq!(token.scopes, vec!["read".to_owned(), "write".to_owned()]);
     }
 }

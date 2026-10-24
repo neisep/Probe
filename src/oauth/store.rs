@@ -9,7 +9,12 @@ use serde::{Deserialize, Serialize};
 
 use super::{OAuthError, Token};
 
+// Layout of the file store. Under `--features keyring-storage` the file store
+// is still compiled (its own tests exercise it) but nothing selects it, so the
+// binary build has no live reader of these.
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 const INTERNAL_DIR: &str = ".probe";
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 const TOKENS_DIR: &str = "oauth_tokens";
 
 pub trait TokenStore {
@@ -24,10 +29,15 @@ struct EnvTokenFile {
     tokens: BTreeMap<String, Token>,
 }
 
+// Compiled in every build, but only *selected* when `keyring-storage` is off
+// (see `oauth::token_store_at`). Kept compiled so a future keychain-unavailable
+// fallback has something to fall back to.
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 pub struct FileTokenStore {
     base_dir: PathBuf,
 }
 
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 impl FileTokenStore {
     pub fn new<P: AsRef<Path>>(base_dir: P) -> Self {
         Self {
@@ -239,6 +249,10 @@ fn write_lock(key: &str) -> Arc<Mutex<()>> {
 /// so we canonicalise its parent directory and rejoin the file name; this
 /// collapses "./data/..." and "data/..." to a single lock. Falls back to the
 /// raw path when the parent can't be resolved.
+// Compiled in every build, but only *selected* when `keyring-storage` is off
+// (see `oauth::token_store_at`). Kept compiled so a future keychain-unavailable
+// fallback has something to fall back to.
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 fn env_lock_key(path: &Path) -> String {
     match (path.parent(), path.file_name()) {
         (Some(parent), Some(name)) => fs::canonicalize(parent)
@@ -262,6 +276,10 @@ fn validate_key(key: &str) -> Result<(), OAuthError> {
     Ok(())
 }
 
+// Compiled in every build, but only *selected* when `keyring-storage` is off
+// (see `oauth::token_store_at`). Kept compiled so a future keychain-unavailable
+// fallback has something to fall back to.
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), OAuthError> {
     // Per-call unique suffix so concurrent writes to the same token file
     // don't stomp each other's in-flight temp file.
@@ -295,6 +313,7 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), OAuthError> {
 /// `OpenOptions::mode` — closing the window where a default-umask
 /// `File::create` produces a 0o644 file we'd later have to chmod down.
 #[cfg(unix)]
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
     use std::os::unix::fs::OpenOptionsExt;
     fs::OpenOptions::new()
@@ -306,6 +325,7 @@ fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
 }
 
 #[cfg(not(unix))]
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
     // On Windows / WASI the Unix permission model doesn't apply; ACLs
     // / NTFS permissions are inherited from the parent directory. Keep
@@ -314,6 +334,10 @@ fn create_token_tmp_file(path: &Path) -> io::Result<fs::File> {
     fs::File::create(path)
 }
 
+// Compiled in every build, but only *selected* when `keyring-storage` is off
+// (see `oauth::token_store_at`). Kept compiled so a future keychain-unavailable
+// fallback has something to fall back to.
+#[cfg_attr(feature = "keyring-storage", allow(dead_code))]
 fn unique_tmp_path(path: &Path) -> PathBuf {
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let nanos = std::time::SystemTime::now()

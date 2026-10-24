@@ -1,7 +1,5 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::oauth::config::slugify_env_id;
-use crate::oauth::{FlowKind, TokenStore, token_store};
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
 use crate::state::{AppState, RequestTab};
 use crate::ui::command::UiCommand;
@@ -487,6 +485,62 @@ fn show_auth_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelInt
     show_oauth_hint(ui, state, intents, selected_index, original_attach_oauth);
 }
 
+/// Explain, in a few words, what clicking Send will do about the token.
+fn show_outlook_label(
+    ui: &mut egui::Ui,
+    outlook: &crate::oauth::middleware::TokenOutlook,
+    now: i64,
+) {
+    use crate::oauth::middleware::TokenOutlook;
+
+    const OK: egui::Color32 = egui::Color32::from_rgb(52, 168, 83);
+    const BUSY: egui::Color32 = egui::Color32::from_rgb(244, 180, 0);
+    const BAD: egui::Color32 = egui::Color32::from_rgb(219, 68, 55);
+
+    let (dot, text, color) = match outlook {
+        TokenOutlook::Valid { expires_at } => (
+            true,
+            format!("(expires in {})", humanize_remaining(expires_at - now)),
+            OK,
+        ),
+        // Client credentials, or any flow holding a refresh token: the send
+        // path renews first and then goes out, with no user step.
+        TokenOutlook::RenewsOnSend => (true, "(renews on send)".to_owned(), BUSY),
+        TokenOutlook::NeedsUserAuthorization => (
+            true,
+            "expired — get a new token in Settings > Auth".to_owned(),
+            BAD,
+        ),
+        TokenOutlook::Missing => (
+            false,
+            "no token — configure in Settings > Auth".to_owned(),
+            theme::TEXT_MUTED,
+        ),
+        TokenOutlook::NotInjecting => (
+            false,
+            "token injection is off — Settings > Auth".to_owned(),
+            theme::TEXT_MUTED,
+        ),
+    };
+
+    if dot {
+        // `•`, not `●`: the filled-circle glyph is missing from egui's
+        // bundled fonts and renders as a tofu box.
+        ui.small(egui::RichText::new("•").color(color));
+    }
+    ui.small(egui::RichText::new(text).color(color));
+}
+
+fn humanize_remaining(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
 fn show_oauth_hint(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -503,49 +557,20 @@ fn show_oauth_hint(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let active_token = state.active_environment_name().and_then(|env_name| {
-        let env_id = slugify_env_id(env_name);
-        let store = token_store();
-        for flow in [
-            FlowKind::AuthCodePkce,
-            FlowKind::ClientCredentials,
-            FlowKind::DeviceCode,
-        ] {
-            if let Ok(Some(token)) = store.get(&env_id, flow.as_str())
-                && !token.is_expired(now)
-            {
-                return Some(token);
-            }
-        }
-        None
-    });
+    // Ask the middleware what the next send will actually do, rather than
+    // inferring it from a raw token lookup — a token can be past its expiry
+    // and still fine, because it renews itself on the way out.
+    let outlook = state
+        .active_environment_name()
+        .map(crate::oauth::middleware::token_outlook)
+        .unwrap_or(crate::oauth::middleware::TokenOutlook::NotInjecting);
 
     let mut attach_buf = original_attach_oauth;
 
     ui.horizontal(|ui| {
         ui.checkbox(&mut attach_buf, "Attach OAuth2 token");
         if attach_buf {
-            if let Some(token) = &active_token {
-                let seconds = token.expires_at.saturating_sub(now);
-                let label = if seconds < 60 {
-                    format!("(expires in {seconds}s)")
-                } else if seconds < 3600 {
-                    format!("(expires in {}m)", seconds / 60)
-                } else {
-                    format!(
-                        "(expires in {}h {}m)",
-                        seconds / 3600,
-                        (seconds % 3600) / 60
-                    )
-                };
-                ui.small(egui::RichText::new("●").color(egui::Color32::from_rgb(52, 168, 83)));
-                ui.small(egui::RichText::new(label).color(egui::Color32::from_rgb(52, 168, 83)));
-            } else {
-                ui.small(
-                    egui::RichText::new("no token — configure in Settings → Auth")
-                        .color(theme::TEXT_MUTED),
-                );
-            }
+            show_outlook_label(ui, &outlook, now);
         }
     });
 
