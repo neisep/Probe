@@ -34,8 +34,10 @@ Severity tags (`C` = critical, `M` = medium, `Minor`) carry over from the code r
   **1. CI (`.github/workflows/build.yml`, release job)**
   - Generate `SHA256SUMS` (`sha256sum probe-linux-x86_64 probe-windows-x86_64.exe`) and upload
     it as a release asset.
-  - Fail the release if the tag `vX.Y.Z` doesn't equal `Cargo.toml`'s `version`. Otherwise the
-    app would always see itself as outdated, or never see an update.
+  - The tag is the version (2026-10-25): the `version` job rejects anything but `vX.Y.Z`
+    and passes `X.Y.Z` to the build as `PROBE_VERSION`, which `update::VERSION` reads at
+    compile time. `Cargo.toml` is never bumped. Local builds report
+    `<Cargo.toml version>-dev` and never auto-check or install.
 
   **2. New module `src/update/`** (pure logic separate from IO, unit-tested)
   - `release.rs` (pure): serde types for the release JSON (`tag_name`, `body`, `html_url`,
@@ -100,6 +102,5 @@ Severity tags (`C` = critical, `M` = medium, `Minor`) carry over from the code r
   **Open concern:** a startup call to GitHub sits a little against wishlist #1 ("no telemetry
   by default"). It sends no identifiers, but a settings toggle may be wanted later.
 
-  **Next:** commit, tag `v0.1.0`
-  (must equal `Cargo.toml`), bump to `0.1.1` and tag again, and update an installed `v0.1.0`
-  end to end. Then move this block to `docs/DONE.md`.
+  **Next:** tag `v0.1.0`, then tag `v0.1.1` (no source change needed), and update an
+  installed `v0.1.0` end to end. Then move this block to `docs/DONE.md`.

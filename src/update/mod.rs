@@ -14,9 +14,19 @@ use std::sync::mpsc;
 use fetch::CheckOutcome;
 pub use release::Release;
 
-/// Debug builds never check by themselves or install: `cargo run` must not
-/// replace `target/debug/probe` with a release binary.
-const IS_DEV_BUILD: bool = cfg!(debug_assertions);
+/// The version this binary reports. The release workflow sets `PROBE_VERSION`
+/// from the git tag at compile time, so `Cargo.toml` never needs bumping.
+/// Local builds don't have it and are marked `-dev`, which never parses as a
+/// release version.
+pub const VERSION: &str = match option_env!("PROBE_VERSION") {
+    Some(version) => version,
+    None => concat!(env!("CARGO_PKG_VERSION"), "-dev"),
+};
+
+/// Only release-workflow builds check by themselves or install: a local
+/// `cargo run` / `cargo build --release` must not replace its own binary
+/// with a downloaded one.
+const IS_DEV_BUILD: bool = option_env!("PROBE_VERSION").is_none() || cfg!(debug_assertions);
 
 #[derive(Debug)]
 pub enum UpdateError {
@@ -142,7 +152,7 @@ impl Updater {
     /// Why *Install* is unavailable for this build, if it is.
     pub fn install_blocker(&self) -> Option<&'static str> {
         if IS_DEV_BUILD {
-            Some("Development build — install a release build to update in place.")
+            Some("Development build — only published releases can update in place.")
         } else if self.exe.is_none() {
             Some("Probe could not locate its own executable.")
         } else {
@@ -386,6 +396,15 @@ mod tests {
             updater.phase(),
             UpdatePhase::Failed { release_page: Some(page), .. } if page.ends_with("v9.0.0")
         ));
+    }
+
+    #[test]
+    fn local_builds_report_a_dev_version_that_is_never_offered_updates() {
+        // Only meaningful without the release workflow's PROBE_VERSION.
+        if option_env!("PROBE_VERSION").is_none() {
+            assert!(VERSION.ends_with("-dev"), "{VERSION}");
+            assert_eq!(release::parse_version(VERSION), None);
+        }
     }
 
     #[test]
