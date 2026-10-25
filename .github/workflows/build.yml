@@ -5,8 +5,19 @@ on:
     tags:
       - 'v*'
 
+# Read-only by default. Only the release job, which runs no third-party build
+# code, gets write access.
 permissions:
-  contents: write
+  contents: read
+
+# Supply-chain hardening:
+# - Actions are pinned to full commit SHAs (a moved tag can't swap in new code).
+# - No build cache: release binaries are built from a clean state with --locked.
+# - The tag is passed to scripts through env, never pasted into them.
+# - CI only creates a *draft* release. The maintainer verifies and signs
+#   SHA256SUMS with the offline release key (.github/scripts/sign-release.sh),
+#   which publishes it. Clients refuse updates without that signature, so a
+#   compromised CI or GitHub account can't ship an update on its own.
 
 jobs:
   # The tag is the version: it is compiled into the binary as PROBE_VERSION,
@@ -17,15 +28,29 @@ jobs:
     outputs:
       version: ${{ steps.tag.outputs.version }}
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
       - name: Read version from tag
         id: tag
+        env:
+          TAG: ${{ github.ref_name }}
         run: |
-          tag="${{ github.ref_name }}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::tag $tag is not of the form vX.Y.Z"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $TAG is not of the form vX.Y.Z"
             exit 1
           fi
-          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # A build with the placeholder key would refuse every future update.
+      - name: Check the release public key is real
+        run: |
+          key="$(sed -n 2p src/update/release-key.pub)"
+          bytes="$(printf %s "$key" | base64 -d 2>/dev/null | wc -c)"
+          prefix="$(printf %s "$key" | base64 -d 2>/dev/null | head -c 2)"
+          if [[ "$bytes" -ne 42 || "$prefix" != "Ed" ]]; then
+            echo "::error::src/update/release-key.pub is not a minisign public key (see docs/RELEASING.md)"
+            exit 1
+          fi
 
   build:
     needs: [version]
@@ -45,11 +70,12 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable branch
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
 
       - name: Install Linux dependencies
@@ -61,25 +87,13 @@ jobs:
             libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
             libxkbcommon-dev libgtk-3-dev
 
-      - name: Cache cargo registry & build
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          # Keyed on the image, not just the OS: build output from a newer image must
-          # not be reused on an older one.
-          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ matrix.os }}-cargo-
-
       - name: Build release
         env:
           PROBE_VERSION: ${{ needs.version.outputs.version }}
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: probe-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
@@ -90,12 +104,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0 # full history + tags for the changelog
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: artifacts
 
@@ -110,25 +124,25 @@ jobs:
           # Windows: single exe
           cp artifacts/probe-x86_64-pc-windows-msvc/probe.exe release/probe-windows-x86_64.exe
 
-          # Checksums the in-app updater verifies downloads against
+          # Checksums the maintainer signs and the in-app updater verifies against
           (cd release && sha256sum probe-linux-x86_64 probe-windows-x86_64.exe > SHA256SUMS)
 
       - name: Generate changelog
-        run: bash .github/scripts/changelog.sh "${{ github.ref_name }}" > notes.md
+        env:
+          TAG: ${{ github.ref_name }}
+        run: bash .github/scripts/changelog.sh "$TAG" > notes.md
 
-      - name: Create GitHub release
+      # A draft is invisible to the updater and the site until sign-release.sh
+      # signs and publishes it (which also triggers the site rebuild).
+      - name: Create draft GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
         run: |
-          gh release create "${{ github.ref_name }}" \
-            --title "${{ github.ref_name }}" \
+          gh release create "$TAG" \
+            --draft \
+            --title "$TAG" \
             --notes-file notes.md \
             release/probe-linux-x86_64 \
             release/probe-windows-x86_64.exe \
             release/SHA256SUMS
-
-      - name: Trigger site rebuild
-        env:
-          # Fine-grained PAT with Actions: Read and write on neisep.github.io only.
-          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
-        run: gh api -X POST repos/neisep/neisep.github.io/actions/workflows/deploy.yml/dispatches -f ref=master

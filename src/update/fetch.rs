@@ -10,7 +10,7 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::release::{self, Asset, Release};
-use super::{UpdateError, VERSION, install};
+use super::{UpdateError, VERSION, install, signature};
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/neisep/Probe/releases/latest";
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
@@ -65,25 +65,46 @@ pub fn spawn_install(release: Release, exe: PathBuf) -> mpsc::Receiver<Result<()
         let sums_asset = release
             .asset(release::SUMS_ASSET)
             .ok_or_else(|| missing(release::SUMS_ASSET))?;
+        let sig_asset = release
+            .asset(release::SIG_ASSET)
+            .ok_or_else(|| missing(release::SIG_ASSET))?;
 
         // Fail on an unwritable install directory before downloading anything.
         let staged = install::stage_next_to(&exe)?;
 
-        let sums = download(&client, sums_asset).await?;
+        // Trust the checksums only once the release key's signature over them
+        // checks out for this exact tag; the binary is then held to them.
+        let sums = download(&client, &release, sums_asset).await?;
+        let signature = download(&client, &release, sig_asset).await?;
+        let signature = String::from_utf8(signature)
+            .map_err(|_| UpdateError::Integrity("signature is not text".to_owned()))?;
+        signature::verify_sums(&sums, &signature, &release.tag_name)?;
+
         let sums = String::from_utf8(sums)
             .map_err(|_| UpdateError::Integrity("SHA256SUMS is not text".to_owned()))?;
         let expected = release::expected_sha256(&sums, asset_name).ok_or_else(|| {
             UpdateError::Integrity(format!("SHA256SUMS has no entry for {asset_name}"))
         })?;
 
-        let bytes = download(&client, asset).await?;
+        let bytes = download(&client, &release, asset).await?;
         install::install(&exe, staged, &bytes, &expected)
     })
 }
 
-/// Fetch an asset whose size GitHub already told us, refusing more bytes
-/// than that (or than the cap) and fewer.
-async fn download(client: &reqwest::Client, asset: &Asset) -> Result<Vec<u8>, UpdateError> {
+/// Fetch an asset of `release` whose size GitHub already told us, refusing
+/// URLs outside Probe's release downloads, and more bytes than that (or than
+/// the cap) or fewer.
+async fn download(
+    client: &reqwest::Client,
+    release: &Release,
+    asset: &Asset,
+) -> Result<Vec<u8>, UpdateError> {
+    if !release::is_trusted_download(release, asset) {
+        return Err(UpdateError::Integrity(format!(
+            "{} points outside Probe's releases: {}",
+            asset.name, asset.browser_download_url
+        )));
+    }
     if asset.size > MAX_DOWNLOAD_BYTES {
         return Err(UpdateError::Integrity(format!(
             "{} is {} bytes, over the {MAX_DOWNLOAD_BYTES}-byte limit",

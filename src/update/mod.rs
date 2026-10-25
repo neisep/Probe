@@ -3,10 +3,15 @@
 //! [`Updater`] is the state machine `app.rs` drives: it starts the release
 //! check (automatically at most once a day in release builds, or on demand),
 //! installs a verified binary over the running one, and restarts Probe on exit.
+//!
+//! An update is installed only if the release's `SHA256SUMS` carries a valid
+//! signature from the maintainer's offline release key ([`signature`]) and the
+//! binary matches it, so publishing a release on GitHub is not enough.
 
 mod fetch;
 mod install;
 pub mod release;
+mod signature;
 
 use std::path::PathBuf;
 use std::sync::mpsc;

@@ -9,6 +9,14 @@ use serde::Deserialize;
 /// binaries, in `sha256sum` output format.
 pub const SUMS_ASSET: &str = "SHA256SUMS";
 
+/// The maintainer's minisign signature over [`SUMS_ASSET`], added when the
+/// release is signed and published (see `super::signature`).
+pub const SIG_ASSET: &str = "SHA256SUMS.minisig";
+
+/// Where every release file must be downloaded from. The API response names
+/// the URLs; anything outside Probe's own release downloads is refused.
+const DOWNLOAD_PREFIX: &str = "https://github.com/neisep/Probe/releases/download/";
+
 /// The automatic startup check runs at most this often.
 pub const CHECK_INTERVAL_SECONDS: i64 = 24 * 60 * 60;
 
@@ -80,9 +88,9 @@ pub fn this_build_asset_name() -> Option<&'static str> {
 }
 
 /// Whether `release` is worth offering to a build at `current_version` that
-/// installs `asset_name`: it must be strictly newer and carry both that
-/// build's binary and the checksum file. Otherwise there is nothing safe to
-/// install, so the user is not told about it.
+/// installs `asset_name`: it must be strictly newer and carry that build's
+/// binary, the checksum file and its signature. Otherwise there is nothing
+/// safe to install, so the user is not told about it.
 pub fn worth_offering(release: &Release, current_version: &str, asset_name: Option<&str>) -> bool {
     let (Some(latest), Some(current)) = (
         parse_version(&release.tag_name),
@@ -93,7 +101,17 @@ pub fn worth_offering(release: &Release, current_version: &str, asset_name: Opti
     let Some(asset_name) = asset_name else {
         return false;
     };
-    latest > current && release.asset(asset_name).is_some() && release.asset(SUMS_ASSET).is_some()
+    latest > current
+        && [asset_name, SUMS_ASSET, SIG_ASSET]
+            .iter()
+            .all(|name| release.asset(name).is_some())
+}
+
+/// Whether `asset` is downloaded from this release's own folder in Probe's
+/// GitHub releases (GitHub then redirects to its file storage).
+pub fn is_trusted_download(release: &Release, asset: &Asset) -> bool {
+    let expected = format!("{DOWNLOAD_PREFIX}{}/{}", release.tag_name, asset.name);
+    asset.browser_download_url == expected
 }
 
 /// The lowercase hex sha256 for `asset_name` in `sha256sum` output
@@ -122,6 +140,7 @@ mod tests {
     use super::*;
 
     const LINUX: &str = "probe-linux-x86_64";
+    const COMPLETE: [&str; 3] = [LINUX, SUMS_ASSET, SIG_ASSET];
 
     fn release(tag: &str, assets: &[&str]) -> Release {
         Release {
@@ -132,7 +151,7 @@ mod tests {
                 .iter()
                 .map(|name| Asset {
                     name: (*name).to_owned(),
-                    browser_download_url: format!("https://example.com/{name}"),
+                    browser_download_url: format!("{DOWNLOAD_PREFIX}{tag}/{name}"),
                     size: 1,
                 })
                 .collect(),
@@ -168,7 +187,7 @@ mod tests {
     fn compares_numerically_not_lexically() {
         let current = "0.9.9";
         assert!(worth_offering(
-            &release("v0.10.0", &[LINUX, SUMS_ASSET]),
+            &release("v0.10.0", &COMPLETE),
             current,
             Some(LINUX)
         ));
@@ -176,7 +195,7 @@ mod tests {
 
     #[test]
     fn same_or_older_release_is_not_offered() {
-        let assets = [LINUX, SUMS_ASSET];
+        let assets = COMPLETE;
         assert!(!worth_offering(
             &release("v0.2.0", &assets),
             "0.2.0",
@@ -191,28 +210,52 @@ mod tests {
 
     #[test]
     fn unparsable_tag_is_not_offered() {
-        let release = release("nightly", &[LINUX, SUMS_ASSET]);
+        let release = release("nightly", &COMPLETE);
         assert!(!worth_offering(&release, "0.1.0", Some(LINUX)));
     }
 
     #[test]
-    fn release_without_this_builds_binary_or_checksums_is_not_offered() {
-        assert!(!worth_offering(
-            &release("v9.0.0", &[SUMS_ASSET]),
-            "0.1.0",
-            Some(LINUX)
-        ));
-        assert!(!worth_offering(
-            &release("v9.0.0", &[LINUX]),
-            "0.1.0",
-            Some(LINUX)
-        ));
+    fn release_missing_binary_checksums_or_signature_is_not_offered() {
+        for assets in [
+            &[SUMS_ASSET, SIG_ASSET][..],
+            &[LINUX, SIG_ASSET],
+            // Unsigned: e.g. a release CI made but the maintainer never signed.
+            &[LINUX, SUMS_ASSET],
+        ] {
+            assert!(
+                !worth_offering(&release("v9.0.0", assets), "0.1.0", Some(LINUX)),
+                "{assets:?}"
+            );
+        }
         // A platform with no asset name at all (e.g. aarch64) gets nothing.
         assert!(!worth_offering(
-            &release("v9.0.0", &[LINUX, SUMS_ASSET]),
+            &release("v9.0.0", &COMPLETE),
             "0.1.0",
             None
         ));
+    }
+
+    #[test]
+    fn downloads_only_from_this_releases_own_folder() {
+        let release = release("v9.0.0", &COMPLETE);
+        let asset = |url: &str| Asset {
+            name: LINUX.to_owned(),
+            browser_download_url: url.to_owned(),
+            size: 1,
+        };
+
+        assert!(is_trusted_download(&release, &release.assets[0]));
+        for url in [
+            "https://evil.example/probe-linux-x86_64",
+            "http://github.com/neisep/Probe/releases/download/v9.0.0/probe-linux-x86_64",
+            // Another repository, or another (older) release of this one.
+            "https://github.com/someone/Probe/releases/download/v9.0.0/probe-linux-x86_64",
+            "https://github.com/neisep/Probe/releases/download/v0.1.0/probe-linux-x86_64",
+            "https://github.com/neisep/Probe/releases/download/v9.0.0/../v0.1.0/probe-linux-x86_64",
+            "https://github.com/neisep/Probe/releases/download/v9.0.0/probe-linux-x86_64?x=1",
+        ] {
+            assert!(!is_trusted_download(&release, &asset(url)), "{url}");
+        }
     }
 
     #[test]

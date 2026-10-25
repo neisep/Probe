@@ -33,7 +33,7 @@ No Electron, no account, no cloud sync. Your requests are plain `.http` files yo
 | **Import** | Paste a `curl` command straight into the URL bar. OpenAPI 3 and Swagger 2 from a file or URL, with a merge preview that keeps your edits. `.http` / `.rest` files. Whole Probe workspaces. |
 | **Export** | Save the full workspace (requests, environments, history) as one bundle. Probe backs up your workspace before every import. |
 | **Safety** | `Authorization`, cookies, API keys and proxy credentials are redacted in saved history. Closing with unsaved changes asks first. |
-| **Updates** | Checks GitHub Releases once a day and updates itself in place after verifying the download's SHA-256. |
+| **Updates** | Checks GitHub Releases once a day and updates itself in place, but only with releases signed by the maintainer's offline key. A compromised GitHub account or build pipeline can't push an update on its own. |
 
 <p align="center">
   <img src="docs/images/screenshot.png" alt="Probe showing a JSON response with syntax highlighting" width="900">
@@ -143,4 +143,4 @@ cargo clippy   # lint
 cargo fmt      # format
 ```
 
-Releases are built by GitHub Actions when a `vX.Y.Z` tag is pushed. The tag *is* the version: it's compiled into the binary, so there's no version to bump in `Cargo.toml`. Local builds show up as `-dev` and never update themselves.
+Releases are built by GitHub Actions when a `vX.Y.Z` tag is pushed. The tag *is* the version: it's compiled into the binary, so there's no version to bump in `Cargo.toml`. Local builds show up as `-dev` and never update themselves. CI only creates a draft; the maintainer signs and publishes it. See [docs/RELEASING.md](docs/RELEASING.md).
