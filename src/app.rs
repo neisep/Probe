@@ -1,16 +1,23 @@
 use eframe::egui;
 use std::{fs, time::Duration};
 
+use crate::http_format::parse_requests;
+use crate::oauth::now_unix;
 use crate::openapi::source::fetch_url;
 use crate::openapi::{OpenApiError, compute_merge, parse_spec};
 use crate::openapi_import::PendingOpenApiImport;
+use crate::persistence::models::UpdateCheckState;
 use crate::persistence::{FileStorage, persist_state, restore_workspace};
 use crate::request_prep::{active_resolution_values, prepare_request_draft};
 use crate::runtime::{AsyncRequest, AsyncRequestResult, Event, Runtime};
 use crate::state::{AppState, View};
+use crate::ui::command::UiCommand;
+use crate::ui::dialogs::update::{UpdateBadgeAction, UpdateDialogAction};
+use crate::ui::import_menu::ImportMenuBusy;
 use crate::ui::intent::PanelIntent;
 use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::{request_preview_modal, shell};
+use crate::update::{UpdateEvent, Updater};
 use crate::workspace::{
     PendingWorkspaceImport, backup_workspace, preview_workspace_import, read_workspace_bundle_file,
     workspace_bundle_from_json, workspace_bundle_to_json,
@@ -74,12 +81,20 @@ pub struct ProbeApp {
     /// Drained and applied by `apply_pending_intents` after the egui frame
     /// completes — this is the single funnel for panel-driven state changes.
     pending_intents: Vec<PanelIntent>,
+    /// File-level commands (save / export / the imports) queued by UI panels
+    /// during the current frame. Drained by `apply_pending_commands`, which
+    /// is the single place UI-triggered file IO is started.
+    pending_commands: Vec<UiCommand>,
+    curl_paste_input: String,
+    curl_paste_dialog_open: bool,
+    updater: Updater,
 }
 
 impl ProbeApp {
     pub fn new() -> Self {
         let runtime = Runtime::new(8);
         let storage = create_storage();
+        let updater = Updater::new(last_update_check(storage.as_ref()), now_unix());
 
         match (runtime, AppState::bootstrap()) {
             (Ok(runtime), Ok(mut state)) => {
@@ -109,6 +124,10 @@ impl ProbeApp {
                     saved_environments,
                     pending_close: false,
                     pending_intents: Vec::new(),
+                    pending_commands: Vec::new(),
+                    curl_paste_input: String::new(),
+                    curl_paste_dialog_open: false,
+                    updater,
                 }
             }
             (Err(error), Ok(state)) => Self {
@@ -132,6 +151,10 @@ impl ProbeApp {
                 panels: crate::ui::panel_state::PanelUiState::default(),
                 pending_close: false,
                 pending_intents: Vec::new(),
+                pending_commands: Vec::new(),
+                curl_paste_input: String::new(),
+                curl_paste_dialog_open: false,
+                updater,
             },
             (Ok(runtime), Err(error)) => Self {
                 status: format!("State bootstrap fallback: {error}"),
@@ -154,6 +177,10 @@ impl ProbeApp {
                 saved_environments: Vec::new(),
                 pending_close: false,
                 pending_intents: Vec::new(),
+                pending_commands: Vec::new(),
+                curl_paste_input: String::new(),
+                curl_paste_dialog_open: false,
+                updater,
             },
             (Err(runtime_error), Err(state_error)) => Self {
                 status: format!("Startup fallback: runtime={runtime_error}; state={state_error}"),
@@ -176,6 +203,10 @@ impl ProbeApp {
                 saved_environments: Vec::new(),
                 pending_close: false,
                 pending_intents: Vec::new(),
+                pending_commands: Vec::new(),
+                curl_paste_input: String::new(),
+                curl_paste_dialog_open: false,
+                updater,
             },
         }
     }
@@ -326,6 +357,46 @@ impl ProbeApp {
         };
 
         self.apply_openapi_text(&text, path.display().to_string());
+    }
+
+    /// Append every request in a `.http`/`.rest` file to the collection.
+    /// Unlike the OpenAPI and workspace importers this needs no confirmation
+    /// step: nothing existing is replaced or merged.
+    fn import_http_file(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("HTTP request file", &["http", "rest"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(error) => {
+                self.status = format!("http import failed: {error}");
+                return;
+            }
+        };
+
+        let drafts = match parse_requests(&text) {
+            Ok(drafts) => drafts,
+            Err(error) => {
+                self.status = format!("http import failed: {error}");
+                return;
+            }
+        };
+
+        let count = drafts.len();
+        self.state.bump_revision();
+        for draft in drafts {
+            self.state.add_imported_request(draft);
+        }
+        self.state.ui.set_view(View::Editor);
+        self.status = format!(
+            "Imported {count} request{} from {}",
+            if count == 1 { "" } else { "s" },
+            path.display()
+        );
     }
 
     fn import_openapi_from_url(&mut self) {
@@ -601,6 +672,64 @@ impl ProbeApp {
         }
     }
 
+    /// Drain `pending_commands` and run each one. The single place where
+    /// UI-triggered file IO starts; panels only name the operation.
+    fn apply_pending_commands(&mut self) {
+        let commands = std::mem::take(&mut self.pending_commands);
+        for command in commands {
+            self.apply_command(command);
+        }
+    }
+
+    fn apply_command(&mut self, command: UiCommand) {
+        match command {
+            UiCommand::SaveWorkspace => {
+                self.save_snapshot();
+                if !self.status.starts_with("Save failed") {
+                    self.status = "Draft saved".to_owned();
+                }
+            }
+            UiCommand::ExportWorkspace => self.export_workspace(),
+            UiCommand::ImportWorkspace => self.import_workspace(),
+            UiCommand::ImportOpenApiFile => self.import_openapi_file(),
+            UiCommand::OpenOpenApiUrlDialog => self.openapi_url_dialog_open = true,
+            UiCommand::ImportHttpFile => self.import_http_file(),
+            UiCommand::OpenCurlPasteDialog => {
+                self.curl_paste_input.clear();
+                self.curl_paste_dialog_open = true;
+            }
+        }
+    }
+
+    /// Which import sources are currently unavailable, so the import menu can
+    /// grey them out instead of failing after the click.
+    fn import_menu_busy(&self) -> ImportMenuBusy {
+        ImportMenuBusy {
+            workspace: !self.can_start_request_preview(),
+            openapi: self.pending_openapi_import.is_some() || self.openapi_url_dialog_open,
+        }
+    }
+
+    fn show_curl_paste_dialog(&mut self, ctx: &egui::Context) {
+        if !self.curl_paste_dialog_open {
+            return;
+        }
+        match crate::ui::dialogs::curl_paste::show(ctx, &mut self.curl_paste_input) {
+            crate::ui::dialogs::curl_paste::CurlPasteDialogAction::None => {}
+            crate::ui::dialogs::curl_paste::CurlPasteDialogAction::Close => {
+                self.curl_paste_dialog_open = false;
+                self.curl_paste_input.clear();
+            }
+            crate::ui::dialogs::curl_paste::CurlPasteDialogAction::Import => {
+                self.curl_paste_dialog_open = false;
+                let curl = std::mem::take(&mut self.curl_paste_input);
+                // Reuse the existing import path so parsing, selection, and
+                // status reporting stay in one place.
+                self.apply_intent(PanelIntent::ImportCurlAsRequest { curl });
+            }
+        }
+    }
+
     fn apply_intent(&mut self, intent: PanelIntent) {
         // cURL import reports success/failure via `self.status`, which the
         // state-only funnel can't reach, so handle it here.
@@ -646,6 +775,8 @@ impl ProbeApp {
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::None => {}
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::Cancel => {
                 self.pending_close = false;
+                // Staying open also means not relaunching after an update.
+                self.updater.cancel_restart();
             }
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::CloseWithoutSaving => {
                 self.saved_requests = self.state.requests.clone();
@@ -677,6 +808,77 @@ impl ProbeApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.status = "OpenAPI fetch: internal error (channel closed)".to_owned();
+            }
+        }
+    }
+
+    fn poll_updater(&mut self) {
+        let Some(event) = self.updater.poll() else {
+            return;
+        };
+        match event {
+            UpdateEvent::Checked { manual, available } => {
+                self.record_update_check();
+                if manual {
+                    self.status = match available {
+                        Some(tag) => format!("Update available: {tag}"),
+                        None => "Probe is up to date".to_owned(),
+                    };
+                }
+            }
+            // The automatic check stays quiet when offline; only a check the
+            // user asked for reports its failure.
+            UpdateEvent::CheckFailed { manual, message } => {
+                if manual {
+                    self.status = format!("Update check failed: {message}");
+                } else {
+                    tracing::warn!("automatic update check failed: {message}");
+                }
+            }
+            UpdateEvent::Installed { version } => {
+                self.status = format!("Probe {version} installed — restart to use it");
+            }
+            UpdateEvent::InstallFailed { message } => {
+                self.status = format!("Update failed: {message}");
+            }
+        }
+    }
+
+    fn record_update_check(&mut self) {
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let state = UpdateCheckState {
+            last_checked_at: Some(now_unix()),
+        };
+        if let Err(error) = storage.save_update_state(&state) {
+            tracing::warn!("saving update check state: {error}");
+        }
+    }
+
+    fn show_update_dialog(&mut self, ctx: &egui::Context) {
+        if !self.updater.dialog_open() {
+            return;
+        }
+        let action = crate::ui::dialogs::update::show(
+            ctx,
+            self.updater.phase(),
+            self.updater.install_blocker(),
+        );
+        match action {
+            UpdateDialogAction::None => {}
+            UpdateDialogAction::Close => self.updater.close_dialog(),
+            UpdateDialogAction::Install => self.updater.install(),
+            UpdateDialogAction::OpenReleasePage(url) => {
+                if let Err(error) = crate::oauth::browser::open_url(&url) {
+                    self.status = format!("Could not open the release page: {error}");
+                }
+            }
+            UpdateDialogAction::Restart => {
+                self.updater.request_restart();
+                // Goes through the normal close path, so unsaved changes are
+                // still offered for saving; `on_exit` relaunches.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
@@ -824,10 +1026,12 @@ impl eframe::App for ProbeApp {
 
         self.poll_pending_openapi_fetch();
         self.poll_pending_oauth_auth(ui.ctx());
+        self.poll_updater();
 
         if self.pending_request.is_some()
             || self.pending_openapi_fetch.is_some()
             || self.pending_oauth_auth.is_some()
+            || self.updater.is_busy()
         {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
@@ -840,50 +1044,30 @@ impl eframe::App for ProbeApp {
             self.preview_selected_request();
         }
 
+        if ui
+            .ctx()
+            .input(|input| input.key_pressed(egui::Key::S) && input.modifiers.command)
+        {
+            self.pending_commands.push(UiCommand::SaveWorkspace);
+        }
+
+        // Read before the panels borrow `self` mutably.
+        let import_menu_busy = self.import_menu_busy();
+        let has_unsaved_changes = self.has_unsaved_changes();
+
         egui::Panel::bottom("bottom_bar").show_inside(ui, |ui| {
             egui::Frame::NONE
                 .fill(crate::ui::theme::PANEL)
                 .inner_margin(egui::Margin::symmetric(12, 6))
                 .show(ui, |ui| {
+                    // Status output only — Save moved next to Send, and every
+                    // import now lives in the top bar's import menu.
                     ui.horizontal(|ui| {
-                        if ui.small_button("Save").clicked() {
-                            self.save_snapshot();
-                            if !self.status.starts_with("Save failed") {
-                                self.status = "Draft saved".to_owned();
-                            }
+                        match crate::ui::dialogs::update::badge(ui, self.updater.phase()) {
+                            UpdateBadgeAction::None => {}
+                            UpdateBadgeAction::Check => self.updater.check(true),
+                            UpdateBadgeAction::OpenDialog => self.updater.open_dialog(),
                         }
-                        if ui.small_button("Export").clicked() {
-                            self.export_workspace();
-                        }
-                        if ui
-                            .add_enabled(
-                                self.can_start_request_preview(),
-                                egui::Button::new("Import").small(),
-                            )
-                            .clicked()
-                        {
-                            self.import_workspace();
-                        }
-                        let openapi_busy =
-                            self.pending_openapi_import.is_some() || self.openapi_url_dialog_open;
-                        if ui
-                            .add_enabled(!openapi_busy, egui::Button::new("OpenAPI").small())
-                            .on_hover_text("Import from OpenAPI / Swagger file")
-                            .clicked()
-                        {
-                            self.import_openapi_file();
-                        }
-                        if ui
-                            .add_enabled(!openapi_busy, egui::Button::new("OA URL").small())
-                            .on_hover_text("Import from OpenAPI / Swagger URL")
-                            .clicked()
-                        {
-                            self.openapi_url_dialog_open = true;
-                        }
-                        if ui.small_button("Clear").clicked() {
-                            self.pending_intents.push(PanelIntent::ClearResponses);
-                        }
-
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if let Some(resp) = self.state.latest_response() {
                                 if let Some(code) = resp.status {
@@ -928,21 +1112,27 @@ impl eframe::App for ProbeApp {
                 });
         });
 
-        shell::show(
-            ui,
-            &mut self.state,
-            &mut self.response_viewer,
-            &mut self.panels,
-            &mut self.pending_intents,
-            self.pending_request.is_some(),
-        );
+        let mut shell_ctx = shell::ShellContext {
+            viewer: &mut self.response_viewer,
+            panels: &mut self.panels,
+            intents: &mut self.pending_intents,
+            commands: &mut self.pending_commands,
+            pending: self.pending_request.is_some(),
+            busy: import_menu_busy,
+            dirty: has_unsaved_changes,
+        };
+        shell::show(ui, &mut self.state, &mut shell_ctx);
         // Drain panel-emitted intents through the single apply_intent
-        // dispatcher so all data mutations land in one place.
+        // dispatcher so all data mutations land in one place, then run the
+        // file-level commands panels asked for.
         self.apply_pending_intents();
+        self.apply_pending_commands();
         self.handle_pending_ui_actions();
         self.show_import_confirmation(ui.ctx());
         self.show_openapi_import_confirmation(ui.ctx());
         self.show_openapi_url_dialog(ui.ctx());
+        self.show_curl_paste_dialog(ui.ctx());
+        self.show_update_dialog(ui.ctx());
         self.show_request_preview(ui.ctx());
 
         if ui.ctx().input(|i| i.viewport().close_requested()) && self.has_unsaved_changes() {
@@ -951,6 +1141,10 @@ impl eframe::App for ProbeApp {
             self.pending_close = true;
         }
         self.show_unsaved_changes_dialog(ui.ctx());
+    }
+
+    fn on_exit(&mut self) {
+        self.updater.restart_if_requested();
     }
 }
 
@@ -1133,6 +1327,19 @@ fn create_storage() -> Option<FileStorage> {
         Ok(storage) => Some(storage),
         Err(error) => {
             eprintln!("storage init failed: {error}");
+            None
+        }
+    }
+}
+
+/// When the last update check completed. A missing or unreadable record
+/// means "never", which only makes the next automatic check run sooner.
+fn last_update_check(storage: Option<&FileStorage>) -> Option<i64> {
+    match storage?.load_update_state() {
+        Ok(state) => state.last_checked_at,
+        Err(crate::persistence::storage::PersistenceError::NotFound(_)) => None,
+        Err(error) => {
+            tracing::warn!("reading update check state: {error}");
             None
         }
     }

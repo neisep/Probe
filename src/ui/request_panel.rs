@@ -1,9 +1,8 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::oauth::config::slugify_env_id;
-use crate::oauth::{FlowKind, TokenStore, token_store};
 use crate::state::request::{ApiKeyLocation, RequestAuth, RequestAuthKind};
 use crate::state::{AppState, RequestTab};
+use crate::ui::command::UiCommand;
 use crate::ui::intent::PanelIntent;
 use crate::ui::theme;
 use eframe::egui;
@@ -12,10 +11,19 @@ pub fn show_request_editor(
     ui: &mut egui::Ui,
     state: &mut AppState,
     intents: &mut Vec<PanelIntent>,
+    commands: &mut Vec<UiCommand>,
+    dirty: bool,
 ) {
     let mut queue_preview_for_selected = false;
 
-    show_header_row(ui, state, intents, &mut queue_preview_for_selected);
+    show_header_row(
+        ui,
+        state,
+        intents,
+        commands,
+        dirty,
+        &mut queue_preview_for_selected,
+    );
     ui.add_space(8.0);
 
     if state.selected_request_index().is_none() {
@@ -45,15 +53,43 @@ pub fn show_request_editor(
     }
 }
 
+/// `💾 Save` sits next to `Send` because that is where the request being
+/// saved is edited. The dot marks unsaved changes; the underlying save is a
+/// whole-workspace persist, so the hover text says so rather than implying
+/// only this request is written.
+fn show_save_button(ui: &mut egui::Ui, commands: &mut Vec<UiCommand>, dirty: bool) {
+    // `•` rather than `●`: the filled-circle glyph is missing from
+    // egui's bundled fonts and renders as a tofu box.
+    let label = if dirty { "💾 Save •" } else { "💾 Save" };
+    let mut button = egui::Button::new(egui::RichText::new(label).color(theme::TEXT_STRONG));
+    if dirty {
+        button = button.fill(theme::ACCENT.gamma_multiply(0.30));
+    }
+    let hover = if dirty {
+        "Unsaved changes — save all changes to disk (Ctrl+S)"
+    } else {
+        "Save all changes to disk (Ctrl+S)"
+    };
+    if ui.add(button).on_hover_text(hover).clicked() {
+        commands.push(UiCommand::SaveWorkspace);
+    }
+}
+
 fn show_header_row(
     ui: &mut egui::Ui,
     state: &AppState,
     intents: &mut Vec<PanelIntent>,
+    commands: &mut Vec<UiCommand>,
+    dirty: bool,
     queue_preview: &mut bool,
 ) {
     let Some(selected_index) = state.selected_request_index() else {
         ui.horizontal(|ui| {
-            ui.add_enabled(false, egui::Button::new("Send"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                ui.add_enabled(false, egui::Button::new("Send"));
+                ui.add_space(6.0);
+                show_save_button(ui, commands, dirty);
+            });
         });
         return;
     };
@@ -103,6 +139,8 @@ fn show_header_row(
             }
 
             ui.add_space(6.0);
+            show_save_button(ui, commands, dirty);
+            ui.add_space(6.0);
 
             let current_url = state
                 .selected_request()
@@ -113,7 +151,7 @@ fn show_header_row(
                 egui::TextEdit::singleline(&mut url_buf)
                     .font(egui::TextStyle::Monospace)
                     .desired_width(ui.available_width())
-                    .hint_text("https://example.com/path"),
+                    .hint_text("https://example.com/path — or paste a curl command"),
             );
             if crate::curl_format::looks_like_curl(&url_buf)
                 && (url_response.lost_focus() || url_buf != current_url)
@@ -447,6 +485,62 @@ fn show_auth_tab(ui: &mut egui::Ui, state: &AppState, intents: &mut Vec<PanelInt
     show_oauth_hint(ui, state, intents, selected_index, original_attach_oauth);
 }
 
+/// Explain, in a few words, what clicking Send will do about the token.
+fn show_outlook_label(
+    ui: &mut egui::Ui,
+    outlook: &crate::oauth::middleware::TokenOutlook,
+    now: i64,
+) {
+    use crate::oauth::middleware::TokenOutlook;
+
+    const OK: egui::Color32 = egui::Color32::from_rgb(52, 168, 83);
+    const BUSY: egui::Color32 = egui::Color32::from_rgb(244, 180, 0);
+    const BAD: egui::Color32 = egui::Color32::from_rgb(219, 68, 55);
+
+    let (dot, text, color) = match outlook {
+        TokenOutlook::Valid { expires_at } => (
+            true,
+            format!("(expires in {})", humanize_remaining(expires_at - now)),
+            OK,
+        ),
+        // Client credentials, or any flow holding a refresh token: the send
+        // path renews first and then goes out, with no user step.
+        TokenOutlook::RenewsOnSend => (true, "(renews on send)".to_owned(), BUSY),
+        TokenOutlook::NeedsUserAuthorization => (
+            true,
+            "expired — get a new token in Settings > Auth".to_owned(),
+            BAD,
+        ),
+        TokenOutlook::Missing => (
+            false,
+            "no token — configure in Settings > Auth".to_owned(),
+            theme::TEXT_MUTED,
+        ),
+        TokenOutlook::NotInjecting => (
+            false,
+            "token injection is off — Settings > Auth".to_owned(),
+            theme::TEXT_MUTED,
+        ),
+    };
+
+    if dot {
+        // `•`, not `●`: the filled-circle glyph is missing from egui's
+        // bundled fonts and renders as a tofu box.
+        ui.small(egui::RichText::new("•").color(color));
+    }
+    ui.small(egui::RichText::new(text).color(color));
+}
+
+fn humanize_remaining(seconds: i64) -> String {
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else {
+        format!("{}h {}m", seconds / 3600, (seconds % 3600) / 60)
+    }
+}
+
 fn show_oauth_hint(
     ui: &mut egui::Ui,
     state: &AppState,
@@ -463,49 +557,20 @@ fn show_oauth_hint(
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0);
 
-    let active_token = state.active_environment_name().and_then(|env_name| {
-        let env_id = slugify_env_id(env_name);
-        let store = token_store();
-        for flow in [
-            FlowKind::AuthCodePkce,
-            FlowKind::ClientCredentials,
-            FlowKind::DeviceCode,
-        ] {
-            if let Ok(Some(token)) = store.get(&env_id, flow.as_str())
-                && !token.is_expired(now)
-            {
-                return Some(token);
-            }
-        }
-        None
-    });
+    // Ask the middleware what the next send will actually do, rather than
+    // inferring it from a raw token lookup — a token can be past its expiry
+    // and still fine, because it renews itself on the way out.
+    let outlook = state
+        .active_environment_name()
+        .map(crate::oauth::middleware::token_outlook)
+        .unwrap_or(crate::oauth::middleware::TokenOutlook::NotInjecting);
 
     let mut attach_buf = original_attach_oauth;
 
     ui.horizontal(|ui| {
         ui.checkbox(&mut attach_buf, "Attach OAuth2 token");
         if attach_buf {
-            if let Some(token) = &active_token {
-                let seconds = token.expires_at.saturating_sub(now);
-                let label = if seconds < 60 {
-                    format!("(expires in {seconds}s)")
-                } else if seconds < 3600 {
-                    format!("(expires in {}m)", seconds / 60)
-                } else {
-                    format!(
-                        "(expires in {}h {}m)",
-                        seconds / 3600,
-                        (seconds % 3600) / 60
-                    )
-                };
-                ui.small(egui::RichText::new("●").color(egui::Color32::from_rgb(52, 168, 83)));
-                ui.small(egui::RichText::new(label).color(egui::Color32::from_rgb(52, 168, 83)));
-            } else {
-                ui.small(
-                    egui::RichText::new("no token — configure in Settings → Auth")
-                        .color(theme::TEXT_MUTED),
-                );
-            }
+            show_outlook_label(ui, &outlook, now);
         }
     });
 

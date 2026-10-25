@@ -85,6 +85,32 @@ items below that are follow-ups completed afterwards.
   Note: in-process only — cross-process / multi-instance writers would still
   need OS file locking (out of scope; Probe runs single-instance).
 
+- [x] **OAuth token renewal without user steps**
+
+  The send path now decides per token whether to attach, refresh, silently
+  re-acquire, or ask the user (`plan_for_token` → `TokenPlan`). Renewal starts
+  `min(REFRESH_BUFFER_SECONDS, lifetime / 2)` before expiry
+  (`renewal_lead_seconds`), so short-lived tokens aren't renewed on every send.
+  A token that is due but can't be renewed and hasn't expired yet is still
+  attached. Expired client-credentials tokens without a refresh token are
+  re-acquired by replaying the grant from the saved config (same completeness
+  check as the panel's "Get token"); auth-code and device-code never are.
+  When the token endpoint omits `expires_in`, the expiry is read from the JWT
+  `exp` claim before falling back to a guess. Also fixed a store mismatch under
+  `--features keyring-storage`: tokens were written to the keychain but looked
+  up on disk, so requests went out unauthorized — every caller now goes
+  through `token_store()` / `token_store_at()` (`TokenStoreImpl`). The request
+  panel's Auth tab shows what Send will do (expires in …, renews on send,
+  expired, no token, injection off).
+  Evidence: `src/oauth/middleware.rs` (`plan_for_token`,
+  `renewal_lead_seconds`, `TokenOutlook`), `src/oauth/reacquire.rs`
+  (`client_credentials_config`), `src/oauth/jwt_exp.rs`,
+  `src/oauth/flows/mod.rs` (`build_cached_token`; test
+  `falls_back_to_the_jwt_exp_claim`), `src/oauth/mod.rs` (`token_store_at`,
+  `TokenStoreImpl`), `src/ui/request_panel.rs` (`show_outlook_label`).
+  Verified: `cargo test` 223 passed; `cargo test --features keyring-storage`
+  210 passed.
+
 ---
 
 ## Backlog follow-ups (post-review)

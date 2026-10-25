@@ -119,7 +119,7 @@ enum ParseState {
     AfterSeparator,
 }
 
-fn is_separator(line: &str) -> bool {
+pub(super) fn is_separator(line: &str) -> bool {
     line.starts_with("###")
 }
 

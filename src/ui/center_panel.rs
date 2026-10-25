@@ -1,16 +1,11 @@
 use crate::state::{AppState, View};
 use crate::ui::intent::PanelIntent;
-use crate::ui::response_viewer::{self, ResponseViewerState};
+use crate::ui::response_viewer;
+use crate::ui::shell::ShellContext;
 use crate::ui::{request_panel, response_panel, theme};
 use eframe::egui;
 
-pub fn show_center(
-    ui: &mut egui::Ui,
-    state: &mut AppState,
-    viewer: &mut ResponseViewerState,
-    intents: &mut Vec<PanelIntent>,
-    pending: bool,
-) {
+pub fn show_center(ui: &mut egui::Ui, state: &mut AppState, ctx: &mut ShellContext<'_>) {
     egui::CentralPanel::default()
         .frame(egui::Frame::NONE.fill(theme::BG))
         .show_inside(ui, |ui| {
@@ -32,7 +27,13 @@ pub fn show_center(
                         .id_salt("request_editor_scroll")
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
-                            request_panel::show_request_editor(ui, state, intents);
+                            request_panel::show_request_editor(
+                                ui,
+                                state,
+                                ctx.intents,
+                                ctx.commands,
+                                ctx.dirty,
+                            );
                         });
                 });
 
@@ -52,10 +53,22 @@ pub fn show_center(
                     {
                         state.ui.set_view(View::History);
                     }
+                    // Clearing response history belongs next to the history
+                    // it clears, not in a row of file operations.
+                    if ui
+                        .add_enabled(
+                            !state.responses.is_empty(),
+                            egui::Button::new("Clear").small(),
+                        )
+                        .on_hover_text("Discard all recorded responses")
+                        .clicked()
+                    {
+                        ctx.intents.push(PanelIntent::ClearResponses);
+                    }
                 });
             });
 
-            response_viewer::show_response_viewer(ui, state, viewer, pending);
+            response_viewer::show_response_viewer(ui, state, ctx.viewer, ctx.pending);
         });
 }
 

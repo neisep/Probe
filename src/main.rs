@@ -14,6 +14,7 @@ mod request_prep;
 mod runtime;
 mod state;
 mod ui;
+mod update;
 mod workspace;
 
 use std::error::Error;

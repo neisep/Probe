@@ -2,13 +2,24 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, mpsc};
 
 use crate::oauth::config::slugify_env_id;
+use crate::oauth::flows::client_credentials::{self, ClientCredentialsConfig};
 use crate::oauth::flows::refresh::{self, RefreshConfig};
 use crate::oauth::{
-    FileTokenStore, FlowKind, OAuthConfig, OAuthError, Token, TokenStore, now_unix,
+    FlowKind, OAuthConfig, OAuthError, Token, TokenStore, now_unix, reacquire, token_store_at,
 };
 use crate::persistence::FileStorage;
 
+/// Renew this many seconds ahead of expiry so a token cannot die in flight.
 const REFRESH_BUFFER_SECONDS: i64 = 60;
+
+/// The renewal lead time for one token: [`REFRESH_BUFFER_SECONDS`], but never
+/// more than half the token's own lifetime. Without the cap, a short-lived
+/// token (say 30 s) would count as stale the moment it is issued and be
+/// renewed on every single send.
+fn renewal_lead_seconds(token: &Token) -> i64 {
+    let lifetime = token.expires_at.saturating_sub(token.obtained_at).max(0);
+    REFRESH_BUFFER_SECONDS.min(lifetime / 2)
+}
 
 type RefreshResult = Result<Option<AttachmentHeader>, OAuthError>;
 
@@ -73,13 +84,13 @@ fn clone_result_for_fanout(result: &RefreshResult) -> RefreshResult {
     }
 }
 
-fn cache_auth(key: &str, header: AttachmentHeader, expires_at: i64) {
+fn cache_auth(key: &str, header: AttachmentHeader, token: &Token) {
     if let Ok(mut guard) = auth_cache().lock() {
         guard.insert(
             key.to_owned(),
             CachedAuth {
                 header,
-                valid_until: expires_at - REFRESH_BUFFER_SECONDS,
+                valid_until: token.expires_at - renewal_lead_seconds(token),
             },
         );
     }
@@ -149,7 +160,7 @@ pub(crate) fn resolve_authorization_at(env_name: &str, base_dir: &str) -> AuthRe
         return AuthResolution::Ready(Ok(None));
     };
 
-    let token_store = FileTokenStore::new(base_dir);
+    let token_store = token_store_at(base_dir);
     let Some(token) = (match token_store.get(&env_id, flow.as_str()) {
         Ok(t) => t,
         Err(e) => return AuthResolution::Ready(Err(e)),
@@ -157,99 +168,223 @@ pub(crate) fn resolve_authorization_at(env_name: &str, base_dir: &str) -> AuthRe
         return AuthResolution::Ready(Ok(None));
     };
 
-    if !token.expires_within(now, REFRESH_BUFFER_SECONDS) {
-        let header = attachment_for(&config, &token);
-        cache_auth(&key, header.clone(), token.expires_at);
-        return AuthResolution::Ready(Ok(Some(header)));
+    match plan_for_token(&token, flow, &config, now) {
+        TokenPlan::Attach => {
+            let header = attachment_for(&config, &token);
+            cache_auth(&key, header.clone(), &token);
+            AuthResolution::Ready(Ok(Some(header)))
+        }
+        TokenPlan::Refresh { refresh_token } => {
+            let Some(endpoint) = config.token_endpoint(flow) else {
+                return AuthResolution::Ready(Err(OAuthError::Config(
+                    "token endpoint missing for refresh".into(),
+                )));
+            };
+            let refresh_config = RefreshConfig {
+                token_url: endpoint.token_url,
+                client_id: endpoint.client_id,
+                client_secret: endpoint.client_secret,
+                refresh_token,
+            };
+            let scopes = token.scopes.clone();
+            start_renewal(
+                RenewalContext {
+                    key,
+                    base_dir: base_dir.to_owned(),
+                    env_id,
+                    flow,
+                    config,
+                },
+                move || block_on_refresh(refresh_config, flow, &scopes),
+            )
+        }
+        TokenPlan::ReacquireClientCredentials(request) => start_renewal(
+            RenewalContext {
+                key,
+                base_dir: base_dir.to_owned(),
+                env_id,
+                flow,
+                config,
+            },
+            move || block_on_client_credentials(&request),
+        ),
+        TokenPlan::NeedsUserAuthorization(reason) => {
+            AuthResolution::Ready(Err(OAuthError::AuthDenied(reason)))
+        }
+    }
+}
+
+/// What the next send will do about OAuth for one environment. Read by the UI
+/// so the request editor can state what will happen instead of guessing from a
+/// raw token lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenOutlook {
+    /// No OAuth config, no active flow, or injection switched off — nothing
+    /// will be attached.
+    NotInjecting,
+    /// Injection is on but no token is stored for the active flow yet.
+    Missing,
+    /// A usable token, with its unix expiry.
+    Valid { expires_at: i64 },
+    /// Due for renewal, and renewal needs no user interaction — the next send
+    /// renews first, then goes out.
+    RenewsOnSend,
+    /// Due for renewal and only the user can fix it.
+    NeedsUserAuthorization,
+}
+
+pub fn token_outlook(env_name: &str) -> TokenOutlook {
+    token_outlook_at(env_name, crate::oauth::DATA_DIR)
+}
+
+pub(crate) fn token_outlook_at(env_name: &str, base_dir: &str) -> TokenOutlook {
+    let env_id = slugify_env_id(env_name);
+    let Ok(storage) = FileStorage::new(base_dir) else {
+        return TokenOutlook::NotInjecting;
+    };
+    let Ok(config) = storage.load_oauth_config(&env_id) else {
+        return TokenOutlook::NotInjecting;
+    };
+    if !config.injection.enabled {
+        return TokenOutlook::NotInjecting;
+    }
+    let Some(flow) = config.active_flow else {
+        return TokenOutlook::NotInjecting;
+    };
+
+    let store = token_store_at(base_dir);
+    let Ok(Some(token)) = store.get(&env_id, flow.as_str()) else {
+        return TokenOutlook::Missing;
+    };
+
+    // Same decision the send path takes, so the label cannot disagree with
+    // what actually happens.
+    match plan_for_token(&token, flow, &config, now_unix()) {
+        TokenPlan::Attach => TokenOutlook::Valid {
+            expires_at: token.expires_at,
+        },
+        TokenPlan::Refresh { .. } | TokenPlan::ReacquireClientCredentials(_) => {
+            TokenOutlook::RenewsOnSend
+        }
+        TokenPlan::NeedsUserAuthorization(_) => TokenOutlook::NeedsUserAuthorization,
+    }
+}
+
+/// What to do with the token found in the store. Kept pure and separate from
+/// the IO around it so every branch is unit-testable without a token endpoint,
+/// a filesystem, or a background thread.
+#[derive(Debug)]
+enum TokenPlan {
+    /// Good for now — attach as-is.
+    Attach,
+    /// Trade the refresh token for a new access token.
+    Refresh { refresh_token: String },
+    /// Replay the client-credentials grant. No refresh token exists, but this
+    /// grant needs no human step, so renewal stays silent.
+    ReacquireClientCredentials(Box<ClientCredentialsConfig>),
+    /// Renewal is due and impossible without the user re-authorizing.
+    NeedsUserAuthorization(String),
+}
+
+fn plan_for_token(token: &Token, flow: FlowKind, config: &OAuthConfig, now: i64) -> TokenPlan {
+    if !token.expires_within(now, renewal_lead_seconds(token)) {
+        return TokenPlan::Attach;
     }
 
     if let Some(refresh_token) = token.refresh_token.clone() {
-        let Some(endpoint) = config.token_endpoint(flow) else {
-            return AuthResolution::Ready(Err(OAuthError::Config(
-                "token endpoint missing for refresh".into(),
-            )));
-        };
+        return TokenPlan::Refresh { refresh_token };
+    }
 
-        // ---- Single-flight: at most one refresh per (base_dir, env_id) ----
-        //
-        // Lock the inflight map briefly. If an existing entry is present,
-        // another thread is already refreshing this exact key — we attach
-        // our sender to its subscriber list and return a Receiver. The
-        // leader thread fans the same result out to every subscriber.
-        let (tx, rx) = mpsc::channel::<RefreshResult>();
-        let became_leader = {
-            let Ok(mut inflight) = inflight_refresh().lock() else {
-                // Lock poisoning is unexpected but recoverable — fall
-                // back to single-shot refresh behaviour instead of
-                // panicking.
-                return AuthResolution::Ready(Err(OAuthError::Internal(
-                    "inflight refresh lock poisoned".into(),
-                )));
-            };
-            match inflight.get_mut(&key) {
-                Some(subscribers) => {
-                    subscribers.push(tx);
-                    false
-                }
-                None => {
-                    inflight.insert(key.clone(), vec![tx]);
-                    true
-                }
-            }
-        };
-
-        if !became_leader {
-            return AuthResolution::Refreshing(rx);
-        }
-
-        let refresh_config = RefreshConfig {
-            token_url: endpoint.token_url,
-            client_id: endpoint.client_id,
-            client_secret: endpoint.client_secret,
-            refresh_token,
-        };
-        let base_dir_owned = base_dir.to_owned();
-        let env_id_owned = env_id.clone();
-        let scopes = token.scopes.clone();
-        let key_owned = key.clone();
-        let config_owned = config.clone();
-
-        std::thread::spawn(move || {
-            let result: RefreshResult = (|| {
-                let refreshed = block_on_refresh(refresh_config, flow, &scopes)?;
-                let store = FileTokenStore::new(&base_dir_owned);
-                store.put(&env_id_owned, flow.as_str(), &refreshed)?;
-                let header = attachment_for(&config_owned, &refreshed);
-                cache_auth(&key_owned, header.clone(), refreshed.expires_at);
-                Ok(Some(header))
-            })();
-
-            // Drain the subscriber list under the lock so a late arriver
-            // (between the result completing and the slot being removed)
-            // becomes the next leader rather than waiting on a closed
-            // sender.
-            let subscribers = match inflight_refresh().lock() {
-                Ok(mut guard) => guard.remove(&key_owned).unwrap_or_default(),
-                Err(_) => Vec::new(),
-            };
-
-            for tx in subscribers {
-                let _ = tx.send(clone_result_for_fanout(&result));
-            }
-        });
-
-        return AuthResolution::Refreshing(rx);
+    if flow == FlowKind::ClientCredentials
+        && let Some(request) = reacquire::client_credentials_config(config)
+    {
+        return TokenPlan::ReacquireClientCredentials(Box::new(request));
     }
 
     if token.is_expired(now) {
-        AuthResolution::Ready(Err(OAuthError::AuthDenied(
-            "token expired and no refresh token available".into(),
-        )))
-    } else {
-        let header = attachment_for(&config, &token);
-        cache_auth(&key, header.clone(), token.expires_at);
-        AuthResolution::Ready(Ok(Some(header)))
+        return TokenPlan::NeedsUserAuthorization(match flow {
+            FlowKind::ClientCredentials => "client-credentials token expired and cannot be \
+                 renewed: token URL, client id, or client secret is missing"
+                .to_owned(),
+            _ => "token expired and no refresh token available".to_owned(),
+        });
     }
+
+    // Renewal was due but nothing can be done about it, and the token has not
+    // actually expired yet — use it rather than failing a request that would
+    // have worked.
+    TokenPlan::Attach
+}
+
+/// Everything a background renewal needs to store its result and publish it.
+struct RenewalContext {
+    key: String,
+    base_dir: String,
+    env_id: String,
+    flow: FlowKind,
+    config: OAuthConfig,
+}
+
+/// Run `acquire` on a background thread under single-flight, returning a
+/// receiver the caller polls.
+///
+/// At most one renewal runs per `(base_dir, env_id)`: the first caller becomes
+/// the leader and every later caller subscribes to the same result instead of
+/// racing the token endpoint. Shared by the refresh-token and
+/// client-credentials paths so both get identical concurrency behaviour.
+fn start_renewal<F>(ctx: RenewalContext, acquire: F) -> AuthResolution
+where
+    F: FnOnce() -> Result<Token, OAuthError> + Send + 'static,
+{
+    let (tx, rx) = mpsc::channel::<RefreshResult>();
+    let became_leader = {
+        let Ok(mut inflight) = inflight_refresh().lock() else {
+            // Lock poisoning is unexpected but recoverable — report it rather
+            // than panicking.
+            return AuthResolution::Ready(Err(OAuthError::Internal(
+                "inflight refresh lock poisoned".into(),
+            )));
+        };
+        match inflight.get_mut(&ctx.key) {
+            Some(subscribers) => {
+                subscribers.push(tx);
+                false
+            }
+            None => {
+                inflight.insert(ctx.key.clone(), vec![tx]);
+                true
+            }
+        }
+    };
+
+    if !became_leader {
+        return AuthResolution::Refreshing(rx);
+    }
+
+    std::thread::spawn(move || {
+        let result: RefreshResult = (|| {
+            let renewed = acquire()?;
+            let store = token_store_at(&ctx.base_dir);
+            store.put(&ctx.env_id, ctx.flow.as_str(), &renewed)?;
+            let header = attachment_for(&ctx.config, &renewed);
+            cache_auth(&ctx.key, header.clone(), &renewed);
+            Ok(Some(header))
+        })();
+
+        // Drain the subscriber list under the lock so a late arriver (between
+        // the result completing and the slot being removed) becomes the next
+        // leader rather than waiting on a closed sender.
+        let subscribers = match inflight_refresh().lock() {
+            Ok(mut guard) => guard.remove(&ctx.key).unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
+
+        for tx in subscribers {
+            let _ = tx.send(clone_result_for_fanout(&result));
+        }
+    });
+
+    AuthResolution::Refreshing(rx)
 }
 
 fn attachment_for(config: &OAuthConfig, token: &Token) -> AttachmentHeader {
@@ -267,9 +402,24 @@ fn block_on_refresh(
     refresh_runtime()?.block_on(async { refresh::run(&config, flow, fallback_scopes).await })
 }
 
+fn block_on_client_credentials(config: &ClientCredentialsConfig) -> Result<Token, OAuthError> {
+    refresh_runtime()?.block_on(async { client_credentials::run(config).await })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Tests marked `#[cfg(not(feature = "keyring-storage"))]` seed a token
+    // through `FileTokenStore` and then assert on what the middleware reads
+    // back. Under `--features keyring-storage` the middleware reads the OS
+    // keychain instead, so those assertions could not hold — and a test suite
+    // must never read or write the developer's real keychain. The
+    // store-independent tests below (planning, cache keys, lead times) run in
+    // both builds.
+    #[cfg(not(feature = "keyring-storage"))]
+    use crate::oauth::FileTokenStore;
+    #[cfg(not(feature = "keyring-storage"))]
     use crate::oauth::config::InjectionConfig;
     use crate::oauth::{FlowKind, OAuthConfig, Token};
 
@@ -308,6 +458,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     fn configured_env(base: &std::path::Path, flow: FlowKind) -> OAuthConfig {
         let storage = FileStorage::new(base).unwrap();
         let mut config = OAuthConfig::default();
@@ -332,6 +483,7 @@ mod tests {
         config
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     fn valid_token(flow: FlowKind) -> Token {
         Token {
             flow,
@@ -365,6 +517,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn returns_none_when_no_token_stored() {
         let base = TempDir::new();
@@ -375,6 +528,7 @@ mod tests {
         assert!(result.is_none());
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn returns_default_authorization_bearer_when_token_valid() {
         let base = TempDir::new();
@@ -396,6 +550,7 @@ mod tests {
         assert_eq!(attachment.value, "Bearer atk");
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn honors_custom_header_name() {
         let base = TempDir::new();
@@ -421,6 +576,7 @@ mod tests {
         assert_eq!(attachment.value, "Bearer atk");
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn empty_prefix_produces_raw_token_value() {
         let base = TempDir::new();
@@ -447,6 +603,7 @@ mod tests {
         assert_eq!(attachment.value, "atk");
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn disabled_injection_returns_none() {
         let base = TempDir::new();
@@ -474,6 +631,235 @@ mod tests {
         assert!(result.is_none());
     }
 
+    fn token_with(flow: FlowKind, obtained_ago: i64, expires_in: i64) -> Token {
+        let now = now_unix();
+        Token {
+            flow,
+            access_token: "atk".into(),
+            refresh_token: None,
+            expires_at: now + expires_in,
+            obtained_at: now - obtained_ago,
+            scopes: vec![],
+        }
+    }
+
+    fn complete_client_credentials() -> OAuthConfig {
+        OAuthConfig {
+            active_flow: Some(FlowKind::ClientCredentials),
+            client_credentials: crate::oauth::config::ClientCredentialsFields {
+                token_url: "https://example.com/token".into(),
+                client_id: "svc".into(),
+                client_secret: "s3cret".into(),
+                ..Default::default()
+            },
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn renewal_lead_is_capped_at_half_a_short_lifetime() {
+        // 1 h token: full 60 s lead.
+        let hour = token_with(FlowKind::ClientCredentials, 0, 3600);
+        assert_eq!(renewal_lead_seconds(&hour), 60);
+        // 30 s token: 15 s, so it is not stale the instant it is issued.
+        let brief = token_with(FlowKind::ClientCredentials, 0, 30);
+        assert_eq!(renewal_lead_seconds(&brief), 15);
+        // Degenerate lifetime cannot produce a negative lead.
+        let zero = token_with(FlowKind::ClientCredentials, 0, 0);
+        assert_eq!(renewal_lead_seconds(&zero), 0);
+    }
+
+    #[test]
+    fn a_freshly_issued_short_lived_token_is_attached_not_renewed() {
+        // Regression: with a flat 60 s lead this 30 s token was "expiring
+        // soon" from birth and renewed on every send.
+        let token = token_with(FlowKind::ClientCredentials, 0, 30);
+        let plan = plan_for_token(
+            &token,
+            FlowKind::ClientCredentials,
+            &complete_client_credentials(),
+            now_unix(),
+        );
+        assert!(matches!(plan, TokenPlan::Attach), "got {plan:?}");
+    }
+
+    #[test]
+    fn refresh_token_wins_over_reacquisition() {
+        let mut token = token_with(FlowKind::ClientCredentials, 3600, -10);
+        token.refresh_token = Some("rtk".into());
+        let plan = plan_for_token(
+            &token,
+            FlowKind::ClientCredentials,
+            &complete_client_credentials(),
+            now_unix(),
+        );
+        match plan {
+            TokenPlan::Refresh { refresh_token } => assert_eq!(refresh_token, "rtk"),
+            other => panic!("expected Refresh, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn expired_client_credentials_token_is_reacquired_silently() {
+        let token = token_with(FlowKind::ClientCredentials, 3600, -10);
+        let plan = plan_for_token(
+            &token,
+            FlowKind::ClientCredentials,
+            &complete_client_credentials(),
+            now_unix(),
+        );
+        match plan {
+            TokenPlan::ReacquireClientCredentials(request) => {
+                assert_eq!(request.token_url, "https://example.com/token");
+                assert_eq!(request.client_id, "svc");
+                assert_eq!(request.client_secret, "s3cret");
+            }
+            other => panic!("expected ReacquireClientCredentials, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn client_credentials_token_nearing_expiry_is_reacquired_before_it_dies() {
+        let token = token_with(FlowKind::ClientCredentials, 3600, 30);
+        let plan = plan_for_token(
+            &token,
+            FlowKind::ClientCredentials,
+            &complete_client_credentials(),
+            now_unix(),
+        );
+        assert!(
+            matches!(plan, TokenPlan::ReacquireClientCredentials(_)),
+            "got {plan:?}"
+        );
+    }
+
+    #[test]
+    fn incomplete_client_credentials_config_still_needs_the_user() {
+        let mut config = complete_client_credentials();
+        config.client_credentials.client_secret = String::new();
+        let token = token_with(FlowKind::ClientCredentials, 3600, -10);
+        match plan_for_token(&token, FlowKind::ClientCredentials, &config, now_unix()) {
+            TokenPlan::NeedsUserAuthorization(reason) => {
+                assert!(reason.contains("client-credentials"), "reason: {reason}");
+            }
+            other => panic!("expected NeedsUserAuthorization, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn interactive_flows_are_never_reacquired_silently() {
+        // Auth code and device code both need a human; an expired token with
+        // no refresh token must surface an error rather than a token call.
+        for flow in [FlowKind::AuthCodePkce, FlowKind::DeviceCode] {
+            let token = token_with(flow, 3600, -10);
+            let mut config = complete_client_credentials();
+            config.active_flow = Some(flow);
+            match plan_for_token(&token, flow, &config, now_unix()) {
+                TokenPlan::NeedsUserAuthorization(reason) => {
+                    assert_eq!(reason, "token expired and no refresh token available");
+                }
+                other => panic!("expected NeedsUserAuthorization for {flow:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn expiring_soon_without_any_renewal_path_is_still_attached() {
+        // Nothing can be renewed, but the token has seconds left — use it
+        // rather than failing a request that would have worked.
+        let mut config = complete_client_credentials();
+        config.active_flow = Some(FlowKind::AuthCodePkce);
+        let token = token_with(FlowKind::AuthCodePkce, 3600, 30);
+        let plan = plan_for_token(&token, FlowKind::AuthCodePkce, &config, now_unix());
+        assert!(matches!(plan, TokenPlan::Attach), "got {plan:?}");
+    }
+
+    #[cfg(not(feature = "keyring-storage"))]
+    #[test]
+    fn outlook_reports_injection_off_and_missing_tokens() {
+        let base = TempDir::new();
+        let dir = base.to_str().unwrap();
+
+        // No config at all.
+        assert_eq!(token_outlook_at("dev", dir), TokenOutlook::NotInjecting);
+
+        // Config present, no token yet.
+        configured_env(&base, FlowKind::ClientCredentials);
+        assert_eq!(token_outlook_at("dev", dir), TokenOutlook::Missing);
+
+        // Injection explicitly switched off.
+        let mut config = configured_env(&base, FlowKind::ClientCredentials);
+        config.injection.enabled = false;
+        FileStorage::new(&base)
+            .unwrap()
+            .save_oauth_config("dev", &config)
+            .unwrap();
+        assert_eq!(token_outlook_at("dev", dir), TokenOutlook::NotInjecting);
+    }
+
+    #[cfg(not(feature = "keyring-storage"))]
+    #[test]
+    fn outlook_reports_a_valid_token_with_its_expiry() {
+        let base = TempDir::new();
+        configured_env(&base, FlowKind::ClientCredentials);
+        let token = valid_token(FlowKind::ClientCredentials);
+        FileTokenStore::new(&base)
+            .put("dev", "client_credentials", &token)
+            .unwrap();
+
+        assert_eq!(
+            token_outlook_at("dev", base.to_str().unwrap()),
+            TokenOutlook::Valid {
+                expires_at: token.expires_at
+            }
+        );
+    }
+
+    #[cfg(not(feature = "keyring-storage"))]
+    #[test]
+    fn outlook_reports_silent_renewal_for_an_expired_client_credentials_token() {
+        let base = TempDir::new();
+        let mut config = configured_env(&base, FlowKind::ClientCredentials);
+        config.client_credentials.client_secret = "s3cret".into();
+        FileStorage::new(&base)
+            .unwrap()
+            .save_oauth_config("dev", &config)
+            .unwrap();
+        FileTokenStore::new(&base)
+            .put(
+                "dev",
+                "client_credentials",
+                &token_with(FlowKind::ClientCredentials, 3600, -10),
+            )
+            .unwrap();
+
+        assert_eq!(
+            token_outlook_at("dev", base.to_str().unwrap()),
+            TokenOutlook::RenewsOnSend
+        );
+    }
+
+    #[cfg(not(feature = "keyring-storage"))]
+    #[test]
+    fn outlook_reports_user_action_when_nothing_can_renew() {
+        let base = TempDir::new();
+        // configured_env leaves client_secret empty, so nothing can renew.
+        configured_env(&base, FlowKind::ClientCredentials);
+        FileTokenStore::new(&base)
+            .put(
+                "dev",
+                "client_credentials",
+                &token_with(FlowKind::ClientCredentials, 3600, -10),
+            )
+            .unwrap();
+
+        assert_eq!(
+            token_outlook_at("dev", base.to_str().unwrap()),
+            TokenOutlook::NeedsUserAuthorization
+        );
+    }
+
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn errors_when_expired_without_refresh() {
         let base = TempDir::new();
@@ -497,6 +883,7 @@ mod tests {
         assert!(matches!(error, OAuthError::AuthDenied(_)));
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn invalidate_drops_cached_header_so_next_call_rereads_token_store() {
         let base = TempDir::new();
@@ -599,6 +986,7 @@ mod tests {
         assert_ne!(a, b);
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn second_caller_during_inflight_refresh_becomes_a_follower() {
         // Pre-insert a leader slot for the cache key so the next call
@@ -681,6 +1069,7 @@ mod tests {
         assert_eq!(two, 2);
     }
 
+    #[cfg(not(feature = "keyring-storage"))]
     #[test]
     fn slugifies_env_name_consistently() {
         let base = TempDir::new();

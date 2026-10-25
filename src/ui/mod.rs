@@ -1,5 +1,7 @@
 pub mod center_panel;
+pub mod command;
 pub mod dialogs;
+pub mod import_menu;
 pub mod intent;
 pub mod left_sidebar;
 pub mod oauth_panel;
