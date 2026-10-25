@@ -192,3 +192,35 @@ items below that are follow-ups completed afterwards.
   `cargo clippy` clean for `curl_format`; `cargo fmt` applied.
   Note: GUI paste path not exercised headlessly — the parse → `RequestDraft`
   mapping (including the realistic dev-tools command) is covered by unit tests.
+
+- [x] **Auto-updater (GitHub Releases, in-place self-update)** _(wishlist #61, Tier 6)_
+
+  Release builds check `GET /repos/neisep/Probe/releases/latest` (unauthenticated) at
+  startup, at most once per 24 h, and on demand from the version badge in the status bar.
+  A release is offered only if it is strictly newer (`vX.Y.Z` only), has this build's
+  binary (Linux/Windows x86_64; any other platform is offered nothing) and has
+  `SHA256SUMS`. *Install* stages `<exe>.update` next to the executable before
+  downloading, so an unwritable install folder fails early. The download must match the
+  size GitHub reports (256 MB cap) and the `SHA256SUMS` entry; then the file is renamed
+  over the exe (on Windows the running exe is moved to `<exe>.old`, which is removed on a
+  later start). *Restart now* goes through the normal close path (the unsaved-changes
+  prompt still applies) and `on_exit` relaunches with the same args and working folder.
+  The version comes from the git tag: CI rejects tags that aren't `vX.Y.Z` and compiles
+  `PROBE_VERSION` in, so `Cargo.toml` is never bumped. Local builds report `-dev` and
+  never auto-check or install. The release workflow publishes `SHA256SUMS`, builds Linux
+  on `ubuntu-22.04` (`ubuntu-latest` = 26.04 produced binaries needing glibc 2.43, which
+  don't start on Ubuntu 24.04 / Mint 22), and triggers the `neisep.github.io` rebuild.
+  New dependency: `sha2` only (`semver`/`self-replace` from the July plan replaced by std).
+  Evidence: `src/update/{mod,release,fetch,install}.rs`, `src/ui/dialogs/update.rs`
+  (dialog + status-bar badge), `src/app.rs` (`poll_updater`, `show_update_dialog`,
+  `on_exit`, unsaved-prompt cancel), `src/persistence/{models,storage}.rs`
+  (`UpdateCheckState`, `data/.probe/update/state.json`), `.github/workflows/build.yml`.
+  Verified: `cargo test` 251 passed, `--features keyring-storage` 238 passed, clippy clean
+  for the new code. GUI on `DISPLAY=:2`: badge, manual check, every dialog state.
+  End to end (2026-10-25) against the real releases: a CI-equivalent build stamped `0.1.0`
+  found v0.1.2 at startup, *Install* replaced the exe with the exact `SHA256SUMS` hash
+  (`2eb1d790…`) with no leftovers, and *Restart now* relaunched v0.1.2 in the same
+  workspace. The v0.1.2 Linux binary needs glibc ≤ 2.35.
+  Not verified: the Windows swap/restart path (no Windows machine).
+  Open: the startup call to GitHub sits a little against wishlist #1 ("no telemetry by
+  default"). It sends no identifiers, but a settings toggle may be wanted later.
