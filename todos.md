@@ -11,7 +11,14 @@ Severity tags (`C` = critical, `M` = medium, `Minor`) carry over from the code r
 
 - [~] **Auto-updater (GitHub Releases, in-place self-update)** _(wishlist #61, Tier 6)_
 
-  State (2026-10-25): steps 1–4 implemented on `feature/workspace`, uncommitted. Verified:
+  State (2026-10-25, later): merged to `master`; `v0.1.0` and `v0.1.1` published; the site
+  rebuild trigger fired. **Blocker found in the end-to-end test:** the Linux release
+  binaries need glibc 2.43, because `ubuntu-latest` is now 26.04, so they don't start on
+  Ubuntu 24.04 / Mint 22 (glibc 2.39). Fix (uncommitted): the Linux build is pinned to
+  `ubuntu-22.04` and the cargo cache is keyed per image. The same problem affects
+  justanothergitgui v1.1.1 (not fixed there).
+
+  Earlier state: steps 1–4 implemented on `feature/workspace`. Verified:
   `cargo test` 250 passed, `--features keyring-storage` 237 passed, clippy clean for the new
   code, release build compiles. A live check against GitHub returned "up to date" (404, no
   releases yet). GUI checked on `DISPLAY=:2` (2026-10-25): badge, manual check → "up to
@@ -102,5 +109,7 @@ Severity tags (`C` = critical, `M` = medium, `Minor`) carry over from the code r
   **Open concern:** a startup call to GitHub sits a little against wishlist #1 ("no telemetry
   by default"). It sends no identifiers, but a settings toggle may be wanted later.
 
-  **Next:** tag `v0.1.0`, then tag `v0.1.1` (no source change needed), and update an
-  installed `v0.1.0` end to end. Then move this block to `docs/DONE.md`.
+  **Next:** user commits the runner fix and tags `v0.1.2`. Check that its Linux binary needs
+  glibc ≤ 2.35. Then, end to end on `:2`: a local `PROBE_VERSION=0.1.0 cargo build --release`
+  (runs here) → update to `v0.1.2` → restart → badge `v0.1.2`, and the exe hash matches
+  `SHA256SUMS`. Then move this block to `docs/DONE.md`.

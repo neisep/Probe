@@ -32,7 +32,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-latest
+          # The binary links against the build machine's glibc; ubuntu-latest (26.04, glibc 2.43)
+          # produced binaries that won't start on Ubuntu 24.04 / Mint 22. 22.04 (glibc 2.35) keeps
+          # the requirement low so the binary runs on older distributions.
+          - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
             artifact: probe
           - os: windows-latest
@@ -65,8 +68,10 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: ${{ runner.os }}-cargo-
+          # Keyed on the image, not just the OS: build output from a newer image must
+          # not be reused on an older one.
+          key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ matrix.os }}-cargo-
 
       - name: Build release
         env:
