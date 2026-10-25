@@ -2,18 +2,22 @@ use eframe::egui;
 use std::{fs, time::Duration};
 
 use crate::http_format::parse_requests;
+use crate::oauth::now_unix;
 use crate::openapi::source::fetch_url;
 use crate::openapi::{OpenApiError, compute_merge, parse_spec};
 use crate::openapi_import::PendingOpenApiImport;
+use crate::persistence::models::UpdateCheckState;
 use crate::persistence::{FileStorage, persist_state, restore_workspace};
 use crate::request_prep::{active_resolution_values, prepare_request_draft};
 use crate::runtime::{AsyncRequest, AsyncRequestResult, Event, Runtime};
 use crate::state::{AppState, View};
 use crate::ui::command::UiCommand;
+use crate::ui::dialogs::update::{UpdateBadgeAction, UpdateDialogAction};
 use crate::ui::import_menu::ImportMenuBusy;
 use crate::ui::intent::PanelIntent;
 use crate::ui::response_viewer::ResponseViewerState;
 use crate::ui::{request_preview_modal, shell};
+use crate::update::{UpdateEvent, Updater};
 use crate::workspace::{
     PendingWorkspaceImport, backup_workspace, preview_workspace_import, read_workspace_bundle_file,
     workspace_bundle_from_json, workspace_bundle_to_json,
@@ -83,12 +87,14 @@ pub struct ProbeApp {
     pending_commands: Vec<UiCommand>,
     curl_paste_input: String,
     curl_paste_dialog_open: bool,
+    updater: Updater,
 }
 
 impl ProbeApp {
     pub fn new() -> Self {
         let runtime = Runtime::new(8);
         let storage = create_storage();
+        let updater = Updater::new(last_update_check(storage.as_ref()), now_unix());
 
         match (runtime, AppState::bootstrap()) {
             (Ok(runtime), Ok(mut state)) => {
@@ -121,6 +127,7 @@ impl ProbeApp {
                     pending_commands: Vec::new(),
                     curl_paste_input: String::new(),
                     curl_paste_dialog_open: false,
+                    updater,
                 }
             }
             (Err(error), Ok(state)) => Self {
@@ -147,6 +154,7 @@ impl ProbeApp {
                 pending_commands: Vec::new(),
                 curl_paste_input: String::new(),
                 curl_paste_dialog_open: false,
+                updater,
             },
             (Ok(runtime), Err(error)) => Self {
                 status: format!("State bootstrap fallback: {error}"),
@@ -172,6 +180,7 @@ impl ProbeApp {
                 pending_commands: Vec::new(),
                 curl_paste_input: String::new(),
                 curl_paste_dialog_open: false,
+                updater,
             },
             (Err(runtime_error), Err(state_error)) => Self {
                 status: format!("Startup fallback: runtime={runtime_error}; state={state_error}"),
@@ -197,6 +206,7 @@ impl ProbeApp {
                 pending_commands: Vec::new(),
                 curl_paste_input: String::new(),
                 curl_paste_dialog_open: false,
+                updater,
             },
         }
     }
@@ -765,6 +775,8 @@ impl ProbeApp {
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::None => {}
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::Cancel => {
                 self.pending_close = false;
+                // Staying open also means not relaunching after an update.
+                self.updater.cancel_restart();
             }
             crate::ui::dialogs::unsaved_changes::UnsavedChangesAction::CloseWithoutSaving => {
                 self.saved_requests = self.state.requests.clone();
@@ -796,6 +808,77 @@ impl ProbeApp {
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.status = "OpenAPI fetch: internal error (channel closed)".to_owned();
+            }
+        }
+    }
+
+    fn poll_updater(&mut self) {
+        let Some(event) = self.updater.poll() else {
+            return;
+        };
+        match event {
+            UpdateEvent::Checked { manual, available } => {
+                self.record_update_check();
+                if manual {
+                    self.status = match available {
+                        Some(tag) => format!("Update available: {tag}"),
+                        None => "Probe is up to date".to_owned(),
+                    };
+                }
+            }
+            // The automatic check stays quiet when offline; only a check the
+            // user asked for reports its failure.
+            UpdateEvent::CheckFailed { manual, message } => {
+                if manual {
+                    self.status = format!("Update check failed: {message}");
+                } else {
+                    tracing::warn!("automatic update check failed: {message}");
+                }
+            }
+            UpdateEvent::Installed { version } => {
+                self.status = format!("Probe {version} installed — restart to use it");
+            }
+            UpdateEvent::InstallFailed { message } => {
+                self.status = format!("Update failed: {message}");
+            }
+        }
+    }
+
+    fn record_update_check(&mut self) {
+        let Some(storage) = &self.storage else {
+            return;
+        };
+        let state = UpdateCheckState {
+            last_checked_at: Some(now_unix()),
+        };
+        if let Err(error) = storage.save_update_state(&state) {
+            tracing::warn!("saving update check state: {error}");
+        }
+    }
+
+    fn show_update_dialog(&mut self, ctx: &egui::Context) {
+        if !self.updater.dialog_open() {
+            return;
+        }
+        let action = crate::ui::dialogs::update::show(
+            ctx,
+            self.updater.phase(),
+            self.updater.install_blocker(),
+        );
+        match action {
+            UpdateDialogAction::None => {}
+            UpdateDialogAction::Close => self.updater.close_dialog(),
+            UpdateDialogAction::Install => self.updater.install(),
+            UpdateDialogAction::OpenReleasePage(url) => {
+                if let Err(error) = crate::oauth::browser::open_url(&url) {
+                    self.status = format!("Could not open the release page: {error}");
+                }
+            }
+            UpdateDialogAction::Restart => {
+                self.updater.request_restart();
+                // Goes through the normal close path, so unsaved changes are
+                // still offered for saving; `on_exit` relaunches.
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
         }
     }
@@ -943,10 +1026,12 @@ impl eframe::App for ProbeApp {
 
         self.poll_pending_openapi_fetch();
         self.poll_pending_oauth_auth(ui.ctx());
+        self.poll_updater();
 
         if self.pending_request.is_some()
             || self.pending_openapi_fetch.is_some()
             || self.pending_oauth_auth.is_some()
+            || self.updater.is_busy()
         {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
         }
@@ -978,6 +1063,11 @@ impl eframe::App for ProbeApp {
                     // Status output only — Save moved next to Send, and every
                     // import now lives in the top bar's import menu.
                     ui.horizontal(|ui| {
+                        match crate::ui::dialogs::update::badge(ui, self.updater.phase()) {
+                            UpdateBadgeAction::None => {}
+                            UpdateBadgeAction::Check => self.updater.check(true),
+                            UpdateBadgeAction::OpenDialog => self.updater.open_dialog(),
+                        }
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                             if let Some(resp) = self.state.latest_response() {
                                 if let Some(code) = resp.status {
@@ -1042,6 +1132,7 @@ impl eframe::App for ProbeApp {
         self.show_openapi_import_confirmation(ui.ctx());
         self.show_openapi_url_dialog(ui.ctx());
         self.show_curl_paste_dialog(ui.ctx());
+        self.show_update_dialog(ui.ctx());
         self.show_request_preview(ui.ctx());
 
         if ui.ctx().input(|i| i.viewport().close_requested()) && self.has_unsaved_changes() {
@@ -1050,6 +1141,10 @@ impl eframe::App for ProbeApp {
             self.pending_close = true;
         }
         self.show_unsaved_changes_dialog(ui.ctx());
+    }
+
+    fn on_exit(&mut self) {
+        self.updater.restart_if_requested();
     }
 }
 
@@ -1232,6 +1327,19 @@ fn create_storage() -> Option<FileStorage> {
         Ok(storage) => Some(storage),
         Err(error) => {
             eprintln!("storage init failed: {error}");
+            None
+        }
+    }
+}
+
+/// When the last update check completed. A missing or unreadable record
+/// means "never", which only makes the next automatic check run sooner.
+fn last_update_check(storage: Option<&FileStorage>) -> Option<i64> {
+    match storage?.load_update_state() {
+        Ok(state) => state.last_checked_at,
+        Err(crate::persistence::storage::PersistenceError::NotFound(_)) => None,
+        Err(error) => {
+            tracing::warn!("reading update check state: {error}");
             None
         }
     }

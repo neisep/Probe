@@ -1,0 +1,119 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  # The in-app updater compares the release tag with the version compiled
+  # into the binary; a mismatch would make every build look outdated (or
+  # never see an update), so refuse to release it.
+  version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check tag matches Cargo.toml version
+        run: |
+          crate_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
+          if [[ "${{ github.ref_name }}" != "v$crate_version" ]]; then
+            echo "::error::tag ${{ github.ref_name }} does not match Cargo.toml version $crate_version"
+            exit 1
+          fi
+
+  build:
+    needs: [version]
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: probe
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: probe.exe
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libx11-dev libxinerama-dev \
+            libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev \
+            libxkbcommon-dev libgtk-3-dev
+
+      - name: Cache cargo registry & build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }}
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: probe-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+  release:
+    needs: [build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # full history + tags for the changelog
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p release
+
+          # Linux: single binary
+          cp artifacts/probe-x86_64-unknown-linux-gnu/probe release/probe-linux-x86_64
+          chmod +x release/probe-linux-x86_64
+
+          # Windows: single exe
+          cp artifacts/probe-x86_64-pc-windows-msvc/probe.exe release/probe-windows-x86_64.exe
+
+          # Checksums the in-app updater verifies downloads against
+          (cd release && sha256sum probe-linux-x86_64 probe-windows-x86_64.exe > SHA256SUMS)
+
+      - name: Generate changelog
+        run: bash .github/scripts/changelog.sh "${{ github.ref_name }}" > notes.md
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" \
+            --title "${{ github.ref_name }}" \
+            --notes-file notes.md \
+            release/probe-linux-x86_64 \
+            release/probe-windows-x86_64.exe \
+            release/SHA256SUMS

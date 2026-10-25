@@ -2,4 +2,5 @@ pub mod curl_paste;
 pub mod openapi_import;
 pub mod openapi_url;
 pub mod unsaved_changes;
+pub mod update;
 pub mod workspace_import;

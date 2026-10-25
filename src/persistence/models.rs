@@ -70,3 +70,10 @@ pub struct SessionState {
     pub open_panels: Vec<String>,
     pub updated_at: Option<String>,
 }
+
+/// When Probe last completed a check for a newer release (unix seconds).
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateCheckState {
+    #[serde(default)]
+    pub last_checked_at: Option<i64>,
+}

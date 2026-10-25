@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::http_format::{HttpFormatError, parse_request, write_request};
 use crate::persistence::models::{
-    ResponsePreview, ResponsePreviewDetail, ResponseSummary, SessionState,
+    ResponsePreview, ResponsePreviewDetail, ResponseSummary, SessionState, UpdateCheckState,
 };
 use crate::state::request::RequestDraft;
 
@@ -63,6 +63,8 @@ const RESPONSES_DIR: &str = "responses";
 const RESPONSE_PREVIEWS_DIR: &str = "response_previews";
 const SESSION_DIR: &str = "session";
 const SESSION_STATE_KEY: &str = "state";
+const UPDATE_DIR: &str = "update";
+const UPDATE_STATE_KEY: &str = "state";
 const OAUTH_CONFIGS_DIR: &str = "oauth_configs";
 const HTTP_EXT: &str = "http";
 
@@ -307,6 +309,16 @@ impl FileStorage {
 
     pub fn load_session_state(&self) -> Result<SessionState, PersistenceError> {
         self.read_internal_json(SESSION_DIR, SESSION_STATE_KEY)
+    }
+
+    // ---- Update check -----------------------------------------------------
+
+    pub fn save_update_state(&self, state: &UpdateCheckState) -> Result<(), PersistenceError> {
+        self.write_internal_json(UPDATE_DIR, UPDATE_STATE_KEY, state)
+    }
+
+    pub fn load_update_state(&self) -> Result<UpdateCheckState, PersistenceError> {
+        self.read_internal_json(UPDATE_DIR, UPDATE_STATE_KEY)
     }
 
     // ---- OAuth2 config ----------------------------------------------------
@@ -602,6 +614,28 @@ mod tests {
             RequestAuth::Bearer {
                 token: "{{API_TOKEN}}".to_owned()
             }
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn update_state_roundtrip_and_missing_file() {
+        let base = temp_dir();
+        let storage = FileStorage::new(&base).unwrap();
+
+        assert!(matches!(
+            storage.load_update_state(),
+            Err(PersistenceError::NotFound(_))
+        ));
+        storage
+            .save_update_state(&UpdateCheckState {
+                last_checked_at: Some(1_700_000_000),
+            })
+            .unwrap();
+        assert_eq!(
+            storage.load_update_state().unwrap().last_checked_at,
+            Some(1_700_000_000)
         );
 
         let _ = fs::remove_dir_all(&base);
