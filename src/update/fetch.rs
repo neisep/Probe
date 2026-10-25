@@ -10,10 +10,9 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use super::release::{self, Asset, Release};
-use super::{UpdateError, install};
+use super::{UpdateError, VERSION, install};
 
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/neisep/Probe/releases/latest";
-const USER_AGENT: &str = concat!("probe/", env!("CARGO_PKG_VERSION"));
 const CHECK_TIMEOUT: Duration = Duration::from_secs(15);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(300);
 /// Refuse anything larger; a Probe binary is a few tens of MB.
@@ -43,11 +42,7 @@ pub fn spawn_check() -> mpsc::Receiver<Result<CheckOutcome, UpdateError>> {
             return Err(UpdateError::Http(format!("HTTP {}", response.status())));
         }
         let release: Release = response.json().await.map_err(http_error)?;
-        let offer = release::worth_offering(
-            &release,
-            env!("CARGO_PKG_VERSION"),
-            release::this_build_asset_name(),
-        );
+        let offer = release::worth_offering(&release, VERSION, release::this_build_asset_name());
         Ok(if offer {
             CheckOutcome::Available(Box::new(release))
         } else {
@@ -148,7 +143,7 @@ where
             .map_err(|error| UpdateError::Http(format!("runtime: {error}")))
             .and_then(|runtime| {
                 let client = reqwest::Client::builder()
-                    .user_agent(USER_AGENT)
+                    .user_agent(format!("probe/{VERSION}"))
                     .https_only(true)
                     .connect_timeout(Duration::from_secs(10))
                     .timeout(timeout)

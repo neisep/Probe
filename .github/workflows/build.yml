@@ -9,21 +9,23 @@ permissions:
   contents: write
 
 jobs:
-  # The in-app updater compares the release tag with the version compiled
-  # into the binary; a mismatch would make every build look outdated (or
-  # never see an update), so refuse to release it.
+  # The tag is the version: it is compiled into the binary as PROBE_VERSION,
+  # so Cargo.toml never needs bumping. The in-app updater only understands
+  # plain vX.Y.Z, so refuse to release anything else.
   version:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.tag.outputs.version }}
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Check tag matches Cargo.toml version
+      - name: Read version from tag
+        id: tag
         run: |
-          crate_version="$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)"
-          if [[ "${{ github.ref_name }}" != "v$crate_version" ]]; then
-            echo "::error::tag ${{ github.ref_name }} does not match Cargo.toml version $crate_version"
+          tag="${{ github.ref_name }}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::tag $tag is not of the form vX.Y.Z"
             exit 1
           fi
+          echo "version=${tag#v}" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [version]
@@ -67,6 +69,8 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-
 
       - name: Build release
+        env:
+          PROBE_VERSION: ${{ needs.version.outputs.version }}
         run: cargo build --release --target ${{ matrix.target }}
 
       - name: Upload artifact
@@ -117,3 +121,9 @@ jobs:
             release/probe-linux-x86_64 \
             release/probe-windows-x86_64.exe \
             release/SHA256SUMS
+
+      - name: Trigger site rebuild
+        env:
+          # Fine-grained PAT with Actions: Read and write on neisep.github.io only.
+          GH_TOKEN: ${{ secrets.SITE_DISPATCH_TOKEN }}
+        run: gh api -X POST repos/neisep/neisep.github.io/actions/workflows/deploy.yml/dispatches -f ref=master

@@ -143,4 +143,4 @@ cargo clippy   # lint
 cargo fmt      # format
 ```
 
-Releases are built by GitHub Actions when a `vX.Y.Z` tag is pushed. The tag must match the version in `Cargo.toml`.
+Releases are built by GitHub Actions when a `vX.Y.Z` tag is pushed. The tag *is* the version: it's compiled into the binary, so there's no version to bump in `Cargo.toml`. Local builds show up as `-dev` and never update themselves.

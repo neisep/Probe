@@ -1,7 +1,7 @@
 use eframe::egui;
 
 use crate::ui::theme;
-use crate::update::UpdatePhase;
+use crate::update::{UpdatePhase, VERSION};
 
 pub enum UpdateDialogAction {
     None,
@@ -19,7 +19,6 @@ pub fn show(
     install_blocker: Option<&str>,
 ) -> UpdateDialogAction {
     let mut action = UpdateDialogAction::None;
-    let current = concat!("v", env!("CARGO_PKG_VERSION"));
 
     egui::Window::new("Update Probe")
         .collapsible(false)
@@ -32,7 +31,7 @@ pub fn show(
                     egui::RichText::new(format!("Probe {} is available", release.tag_name))
                         .strong(),
                 );
-                ui.small(format!("You have {current}."));
+                ui.small(format!("You have v{VERSION}."));
                 ui.add_space(6.0);
                 let notes = release.body.as_deref().unwrap_or("").trim();
                 if !notes.is_empty() {
@@ -126,7 +125,6 @@ pub enum UpdateBadgeAction {
 /// manual "check for updates" control and as the notice when an update is
 /// available or installed.
 pub fn badge(ui: &mut egui::Ui, phase: &UpdatePhase) -> UpdateBadgeAction {
-    let current = concat!("v", env!("CARGO_PKG_VERSION"));
     let (text, color, hover, on_click) = match phase {
         UpdatePhase::Checking { .. } => (
             "Checking for updates…".to_owned(),
@@ -159,7 +157,7 @@ pub fn badge(ui: &mut egui::Ui, phase: &UpdatePhase) -> UpdateBadgeAction {
             UpdateBadgeAction::OpenDialog,
         ),
         UpdatePhase::Idle | UpdatePhase::UpToDate => (
-            current.to_owned(),
+            format!("v{VERSION}"),
             theme::TEXT_MUTED,
             Some("Check for updates"),
             UpdateBadgeAction::Check,
